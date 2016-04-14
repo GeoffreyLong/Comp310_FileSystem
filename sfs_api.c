@@ -67,15 +67,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <math.h>
 #include "disk_emu.h"
-
+#include <inttypes.h>
 int seen = 0;
 
 #define MY_DISK "sfs_disk.disk"
 #define BLOCK_SZ 1024
 #define NUM_BLOCKS 100  //TODO: increase
 #define NUM_INODES 10   //TODO: increase
+
+// TODO get ceil to work
+#define FREE_BITMAP_SIZE ((NUM_BLOCKS+8-1) / 8)
 
 // verify that this is right...
 #define NUM_INODE_BLOCKS (sizeof(inode_t) * NUM_INODES / BLOCK_SZ + 1) 
@@ -85,16 +88,69 @@ inode_t table[NUM_INODES];
 
 file_descriptor fdt[NUM_INODES];
 
+// Use a type that only takes up a single byte for ease of use
+// Originally had unsigned chars but uint_8 better demonstrates intent
+uint8_t free_space_bitmap[FREE_BITMAP_SIZE];
 
 
+int getNextFreeBlock(){
+  int freeIndex = 0;
+  for (int i = 0; i < FREE_BITMAP_SIZE; i++){
+    uint8_t val = free_space_bitmap[i];
+    if (val != 0){
+      // 7 because I use uint_8
+      for (int j = 7; j >= 0; j --){
+        // If the jth bit is a 1 and the freeIndex is valid then return the value
+        if ((val & 1<<j) >> j && freeIndex <= NUM_BLOCKS) return freeIndex;
+        freeIndex += 1;
+      }
+    }
+    else{
+      // Since 8 bit
+      freeIndex += 8;
+    }
+
+  }
+
+  // If you cannot locate a free block return -1
+  return -1;
+}
+
+
+
+int mark_block_at(int blockIndex, int free){
+  // The map index is the block index divided by the 8 bit size
+  int mapIndex = blockIndex / 8;
+  // Get the specific bit
+  int mapSub = blockIndex % 8;
+  // Modify that location
+  // If free flag is on then we want to free  this index
+  // TODO error handling
+  uint8_t mask = 1 << mapSub;
+  if (free == 1){
+    // Or with the mask to default the index to 1
+    free_space_bitmap[mapIndex] |= mask;
+  }
+  else {
+    // And with the masks complement (and with 0 at index) to default index to 0
+    free_space_bitmap[mapIndex] &= ~mask;
+  }
+  
+  // Write the free map table back to disk
+  // Might not be the most efficient, but it seems to work
+  int blocksTaken = (FREE_BITMAP_SIZE + BLOCK_SZ - 1) / BLOCK_SZ;
+  write_blocks(NUM_BLOCKS-blocksTaken, blocksTaken, &free_space_bitmap);
+  
+  return 0;
+}
 
 
 void init_superblock() {
-    sb.magic = 0xACBD0005;
-    sb.block_size = BLOCK_SZ;
-    sb.fs_size = NUM_BLOCKS * BLOCK_SZ;
-    sb.inode_table_len = NUM_INODE_BLOCKS;
-    sb.root_dir_inode = 0;
+  sb.magic = 0xACBD0005;
+  sb.block_size = BLOCK_SZ;
+  sb.fs_size = NUM_BLOCKS * BLOCK_SZ;
+  sb.inode_table_len = NUM_INODE_BLOCKS;
+  sb.root_dir_inode = 0;
 }
 
 void mksfs(int fresh) {
@@ -110,19 +166,26 @@ void mksfs(int fresh) {
     // create super block
     init_superblock();
 
-    // TODO where is this?
+    // In disk emu
     init_fresh_disk(MY_DISK, BLOCK_SZ, NUM_BLOCKS);
-    
-    /* write super block
-     * write to first block, and only take up one block of space
-     * pass in sb as a pointer
-     */
     write_blocks(0, 1, &sb);
+    
+    // Free block list
+    // Clear the bitmap
+    for (int i = 0; i < FREE_BITMAP_SIZE; i++){
+      free_space_bitmap[i] = 255;
+    }
+
+    // Write superblock as first block (one block of space)
+    mark_block_at(1, 0);
 
     // write inode table
     write_blocks(1, sb.inode_table_len, table);
 
-    // write free block list
+
+    printf("%" PRIu64 "\n", sb.block_size);
+
+
   } 
   else {
     // File system is opened from disk

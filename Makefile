@@ -1,4 +1,4 @@
-CFLAGS = -c -g -Wall -std=gnu99 `pkg-config fuse --cflags --libs`
+CFLAGS = -c -g -Wall -lm -std=gnu99 `pkg-config fuse --cflags --libs`
 
 LDFLAGS = `pkg-config fuse --cflags --libs`
 
