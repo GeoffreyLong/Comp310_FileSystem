@@ -178,6 +178,26 @@ uint64_t get_inode_from_name(char* name){
   return -1;
 }
 
+
+uint64_t create_inode(){
+  for (int i = 0; i < NUM_INODE_BLOCKS; i ++){
+    // Overloading one of the fields... typically considered bad practice
+    // If mode is -1 then it is empty
+    if (inode_table[i].mode == -1){
+      // Set some parameters, not sure what to set UID or GID to
+      inode_table[i].mode = 0;
+      inode_table[i].link_cnt = 0;
+      inode_table[i].size = 0;
+      
+      // Return the index of the inode
+      return i;
+    }
+  }
+
+  return 0;
+}
+
+
 void init_superblock() {
   sb.magic = 0xACBD0005;
   sb.block_size = BLOCK_SZ;
@@ -217,9 +237,15 @@ void mksfs(int fresh) {
 
     // write super block
     write_blocks_plus_mark(0, 1, &sb);
+    
+    // Create root directory
+    
+    
     // write inode table
     // TODO figure out this inode stuff
     write_blocks_plus_mark(1, sb.inode_table_len, inode_table);
+
+
   } 
   else {
     // File system is opened from disk
@@ -307,13 +333,12 @@ int sfs_fopen(char *name) {
 
   // Create the file if it doesn't already exist
   if (iNodeNum == -1){
-    printf("No file found, creating one");
+    printf("No file found, creating one \n");
 
-    // Create an inode, return said inode
-    iNodeNum = create_inode();
     // Need to create an inode, root_directory entry, and 
     // Method will create an inode at the next available slot
-    // iNodeNum = create_inode();
+    iNodeNum = create_inode();
+    printf("File created at inode %d \n", iNodeNum);
   }
   else{
     // TODO check to see if the file is already open???

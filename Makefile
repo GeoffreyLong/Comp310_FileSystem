@@ -9,7 +9,7 @@ LDFLAGS = `pkg-config fuse --cflags --libs`
 SOURCES= disk_emu.c sfs_api.c jit_test.c sfs_api.h
 
 OBJECTS=$(SOURCES:.c=.o)
-EXECUTABLE=First_Lastname_sfs
+EXECUTABLE=Geoffrey_Long_sfs
 
 all: $(SOURCES) $(HEADERS) $(EXECUTABLE)
 
