@@ -458,14 +458,14 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   int blockOffset = rwOffset / BLOCK_SZ;
 
   // Want to get the current data page pointed to by the rwptr 
-  uint64_t curDataPage;
+  uint64_t curDataPageIdx;
   if (blockOffset < 12){
-    if (DEBUG) printf("Acquiring data page from direct pointers");
+    if (DEBUG) printf("Acquiring data page from direct pointers \n");
     // If it is a direct pointer then the corresponding block can be read directly
-    curDataPage = inode->data_ptrs[blockOffset]; 
+    curDataPageIdx = inode->data_ptrs[blockOffset]; 
   }
   else{
-    if (DEBUG) printf("Acquiring data page from indirect pointers");
+    if (DEBUG) printf("Acquiring data page from indirect pointers \n");
     // Indirect pointers
     // The indirect pointer will be a pointer to a block in memory
     // This block will be filled with contiguous pointers to data pages
@@ -475,7 +475,7 @@ int sfs_fwrite(int fileID, const char *buf, int length){
     // If the indirect ptr hasn't been set up yet, then this will trigger
     // The pointer page itself will just be empty
     if (indirPtr <=0){
-      if (DEBUG) printf("No indirect found, creating new indirect for inode %d", fileID);
+      if (DEBUG) printf("No indirect found, creating new indirect for inode %d \n", fileID);
 
       // Get the next free block and set the indirect pointer to be this location
       indirPtr = getNextFreeBlock();
@@ -483,52 +483,71 @@ int sfs_fwrite(int fileID, const char *buf, int length){
 
       // This only gets the pointer page though
       // Need to set up a data page as well
-      curDataPage = getNextFreeBlock();
+      curDataPageIdx = getNextFreeBlock();
       // Set the first index in the pointer page to be the current data page index
-      pointerPage[0] = curDataPage;
+      pointerPage[0] = curDataPageIdx;
       //TODO write this back out as block
     }
     else{
       if (DEBUG) printf("Indirect pointer found");
       
-      char *pointerPage = calloc(1,BLOCK_SZ);
+      // Read index page from memory
+      uint64_t *pointerPage = calloc(1,BLOCK_SZ);
+      read_blocks(indirPtr, 1, (void*) pointerPage);
+      
       
       // from 0 to the block size, iterating in 8 byte increments (64 bits)
       // NOTE this might be too many bytes, seems unnecessary 
       // Iterate through pointer page to find first empty block
-      for (int i = 0; i < BLOCK_SZ; i += BLOCK_SZ/8){
-        // Iterate over the 8 blocks, only valid if all of them are 0
-        int j;
-        for (j = 0; j < 8; j ++){
-          if (pointerPage[8*i+j] != 0) break;
+      int i;
+      for (i = 0; i < BLOCK_SZ/8; i += 1){ // TODO might want to error handle this size
+        if (pointerPage[i] == 0){
+          curDataPageIdx = getNextFreeBlock();
+          if (DEBUG) printf("Found new pointer slot for page %d \n", curDataPageIdx);
+          pointerPage[i] = curDataPageIdx;
+          break;
         }
-        // If j iterated to 8 then all of the blocks are 0
-        if (j == 8) {
-          
-        }
-
-
       }
-
-
-      //read_blocks(blockOffset, 1, (void*) buf);
+      // If i iterates all the way to block size, then the pointer page is full
+      if (i == BLOCK_SZ){
+        if (DEBUG) printf("Unable to find free data pointer on inode \n");
+      }
     }
-
   }
 
-  // If rwOffset is 0, or the inode.EOF_block is -1 then it is a new node
-  // If the EOF_offset is 0, then it is either new or we need to get it a new block
-  // Assigning blocks to inodes is done lazily (as needed)
-  // In this we are reading full blocks
-  if (!(rwOffset == 0 || inode->EOF_block == -1 || inode->EOF_offset <= 0)){
-    
-  }
 
-  // Malloc or calloc?
-  //char *readBuffer = calloc(1,BLOCK_SZ);
-  //read_blocks(blockOffset, 1, (void*) buf);
+  // fileOffset is the byte location within the current file
+  int fileOffset = rwOffset % BLOCK_SZ;
+  // This is the location within the buffer (how far through the data we are)
+  int bufferIdx = 0;
+  // There is a page that is partially filled, fill it the rest of the way
+  if (!rwOffset == 0){
+    if (DEBUG) printf("Filling up remainder of partially filled page \n");
+    // read block from current page
+    char *curDataPage = calloc(1,BLOCK_SZ);
+    read_blocks(curDataPageIdx, 1, (char*) curDataPage);
+
+    for (fileOffset; fileOffset < BLOCK_SZ; fileOffset ++){
+      curDataPage[fileOffset] = buf[bufferIdx];
+      fileOffset += 1;
+    }
+    write_blocks_plus_mark(curDataPageIdx, 1, &curDataPage);
+    curDataPageIdx = getNextFreeBlock();
+  }
   
   
+  while(fileOffset != length){
+    printf("Writing to file");
+    char *curDataPage = calloc(1,BLOCK_SZ);
+    // memcpy didn't want to work
+    for (int i = 0; i < BLOCK_SZ; i ++){
+      curDataPage[i] = buf[fileOffset];
+      fileOffset += 1;
+    }
+    write_blocks_plus_mark(curDataPageIdx, 1, &curDataPage);
+    curDataPageIdx = getNextFreeBlock();
+    break;
+  }
 
 
   //int tempLength = length;
