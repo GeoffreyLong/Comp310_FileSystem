@@ -83,6 +83,9 @@ int seen = 0;
 
 // TODO verify that this is right...
 #define NUM_INODE_BLOCKS (sizeof(inode_t) * NUM_INODES / BLOCK_SZ + 1) 
+// TODO define num root directory blocks
+#define NUM_ROOTDIR_BLOCKS 1
+#define DEBUG 1
 
 superblock_t sb;
 inode_t inode_table[NUM_INODES];
@@ -164,7 +167,7 @@ int write_blocks_plus_mark(int start_address, int nblocks, void *buffer){
 uint64_t get_inode_from_name(char* name){
   // Iterate over the entire directory in memory.
   // If a file exists by that name, return its inode number
-  for (int i = 0; i < NUM_INODE_BLOCKS; i ++){
+  for (int i = 0; i < NUM_INODES; i ++){
     file_map curFile = root_directory[i];
 
     // If curFile has a null name or inode then clearly invalid
@@ -180,7 +183,7 @@ uint64_t get_inode_from_name(char* name){
 
 
 uint64_t create_inode(){
-  for (int i = 0; i < NUM_INODE_BLOCKS; i ++){
+  for (int i = 0; i < NUM_INODES; i ++){
     // Overloading one of the fields... typically considered bad practice
     // If mode is -1 then it is empty
     if (inode_table[i].mode == -1){
@@ -194,7 +197,7 @@ uint64_t create_inode(){
     }
   }
 
-  return 0;
+  return -1;
 }
 
 
@@ -233,13 +236,21 @@ void mksfs(int fresh) {
     for (int i = 0; i < FREE_BITMAP_SIZE; i++){
       free_space_bitmap[i] = 255;
     }
+    // Set all of these for my naive overloading of mode
+    for (int i = 0; i < NUM_INODES; i++){
+      inode_table[i].mode = -1;
+    }
 
 
     // write super block
     write_blocks_plus_mark(0, 1, &sb);
     
     // Create root directory
-    
+    inode_table[sb.root_dir_inode].mode = 0;
+    // Is size the size of the table?
+    //inode_table[sb.root_dir_inode].size = 
+    // Should write this out to blocks
+    write_blocks_plus_mark(1+sb.inode_table_len, NUM_ROOTDIR_BLOCKS, root_directory);
     
     // write inode table
     // TODO figure out this inode stuff
@@ -325,6 +336,7 @@ int sfs_fopen(char *name) {
   // See if the name exceeds the max
   // The name passed in will include the extension I believe
   //      i.e. some_name.txt
+  if (DEBUG) printf("\nOpening %s \n", name);  
   if (strlen(name) > MAXFILENAME) return -1;
 
   // Find the file in the file map
