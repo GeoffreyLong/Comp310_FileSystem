@@ -194,13 +194,9 @@ uint64_t create_inode(){
       inode_table[i].mode = 0;
       inode_table[i].link_cnt = 0;
       inode_table[i].size = 0;
-      // Get the next free block and mark it as taken
-      // Again, might not be the most efficient implementation
-      // TODO actually, should probably put this as -1...
-      // Set when I have something to write
-      int nextFree = getNextFreeBlock();
-      free_space_bitmap[nextFree] = 0;
-      inode_table[i].EOF_block = nextFree; 
+
+      // Might not need these
+      inode_table[i].EOF_block = -1; 
       inode_table[i].EOF_offset = 0;
       // Return the index of the inode
       return i;
@@ -364,8 +360,8 @@ int sfs_fopen(char *name) {
     // Method will create an inode at the next available slot
     iNodeNum = create_inode();
 
-    // Perhaps could do this this way
-    // Rather naive but good for now
+    // Perhaps could do indexing this way
+    // Might be naive but good for now
     root_directory[iNodeNum].filename = name;
     root_directory[iNodeNum].inode = iNodeNum;
 
@@ -388,16 +384,14 @@ int sfs_fopen(char *name) {
     fd_table[fd_idx].inode = iNodeNum;
   }
 
-  // Set the RW pointers
-  // If the inode is new, the RW pointers have an offset of 0
-  // Else set it according to the inode EOF block and offset 
-  if (inode_table[iNodeNum].EOF_block == -1){
-    fd_table[fd_idx].rwptr = 0;
-  }
-  else{
-    fd_table[fd_idx].rwptr = inode_table[iNodeNum].EOF_block * BLOCK_SZ 
-                            + inode_table[iNodeNum].EOF_offset;
-  }
+
+  // Set the rwptr to be the size
+  // Assume there is no free space in a file, when it's written it remains tight
+  fd_table[fd_idx].rwptr = inode_table[iNodeNum].size;
+
+  // The inode table and root directory were modified, so write this to disk
+  write_blocks_plus_mark(1, sb.inode_table_len, inode_table);
+  write_blocks_plus_mark(1+sb.inode_table_len, NUM_ROOTDIR_BLOCKS, root_directory);
 
 
   if (DEBUG) printf("Returning FD %d\n", fd_idx);
@@ -550,16 +544,6 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   }
 
 
-  //int tempLength = length;
-  //while (tempLength > 0){
-  //}
-  
-
-  int block = 20;
-  inode->data_ptrs[0] = block;
-  inode->size += length;
-  fd->rwptr += length;
-  write_blocks(block, 1, (void*) buf);
 
 	return 0;
 }
