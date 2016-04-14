@@ -3,7 +3,8 @@
 
 #include <stdint.h>
 
-#define MAXFILENAME 60
+// TODO does this include the 3 bits or not?
+#define MAXFILENAME 16
 
 typedef struct {
     uint64_t magic;
@@ -31,6 +32,14 @@ typedef struct {
     uint64_t inode;
     uint64_t rwptr;
 } file_descriptor;
+
+
+// Very simple mapping from filename to inode
+// Don't care about performance so can just iterate over all files in dir
+typedef struct {
+  char* filename;
+  uint64_t inode;
+} file_map;
 
 void mksfs(int fresh);
 int sfs_getnextfilename(char *fname);

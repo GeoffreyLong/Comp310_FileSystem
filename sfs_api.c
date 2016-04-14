@@ -7,7 +7,7 @@
 //        File System Size (in blocks)
 //        I-node table length (in blocks)
 //        Root directory (i-Node number)
-//            Root directory is pointed to by an i-Node which is pointed to by this
+//            Root directory is pointed to by an i-Node which is pointed to by super block
 //            Directory is a mapping table to convert file name to i-Node
 //            Contains at least i-Node and file name
 //            File name is limited to 16 chars, extension to 3 chars
@@ -79,19 +79,23 @@ int seen = 0;
 
 // TODO get ceil to work
 #define FREE_BITMAP_SIZE ((NUM_BLOCKS+8-1) / 8)
+#define FREE_BITMAP_BLOCKS ((FREE_BITMAP_SIZE + BLOCK_SZ - 1) / BLOCK_SZ)
 
-// verify that this is right...
+// TODO verify that this is right...
 #define NUM_INODE_BLOCKS (sizeof(inode_t) * NUM_INODES / BLOCK_SZ + 1) 
 
 superblock_t sb;
-inode_t table[NUM_INODES];
+inode_t inode_table[NUM_INODES];
 
 file_descriptor fdt[NUM_INODES];
+
+file_map root_directory[NUM_INODES]; 
 
 // Use a type that only takes up a single byte for ease of use
 // Originally had unsigned chars but uint_8 better demonstrates intent
 uint8_t free_space_bitmap[FREE_BITMAP_SIZE];
 
+char* previousFileName;
 
 int getNextFreeBlock(){
   int freeIndex = 0;
@@ -118,32 +122,61 @@ int getNextFreeBlock(){
 
 
 
+// TODO error handling
 int mark_block_at(int blockIndex, int free){
   // The map index is the block index divided by the 8 bit size
   int mapIndex = blockIndex / 8;
   // Get the specific bit
   int mapSub = blockIndex % 8;
-  // Modify that location
-  // If free flag is on then we want to free  this index
-  // TODO error handling
+
+
+  // Modify the location according to free flag
   uint8_t mask = 1 << mapSub;
   if (free == 1){
-    // Or with the mask to default the index to 1
+    // OR with the mask to default the index to 1
     free_space_bitmap[mapIndex] |= mask;
   }
   else {
-    // And with the masks complement (and with 0 at index) to default index to 0
+    // AND with the masks complement (and with 0 at index) to default index to 0
     free_space_bitmap[mapIndex] &= ~mask;
   }
   
   // Write the free map table back to disk
   // Might not be the most efficient, but it seems to work
-  int blocksTaken = (FREE_BITMAP_SIZE + BLOCK_SZ - 1) / BLOCK_SZ;
-  write_blocks(NUM_BLOCKS-blocksTaken, blocksTaken, &free_space_bitmap);
+  write_blocks(NUM_BLOCKS-FREE_BITMAP_BLOCKS, FREE_BITMAP_BLOCKS, &free_space_bitmap);
   
   return 0;
 }
 
+int write_blocks_plus_mark(int start_address, int nblocks, void *buffer){
+  // Write the buffer
+  write_blocks(start_address, nblocks, buffer);
+  
+  // Mark each block 
+  for (int i = 0; i < nblocks; i++){
+    mark_block_at(start_address + i, 0);
+  }
+  
+  return 0;
+}
+
+// Get the inode number from the root directory using the name
+uint64_t get_inode_from_name(char* name){
+  // Iterate over the entire directory in memory.
+  // If a file exists by that name, return its inode number
+  for (int i = 0; i < NUM_INODE_BLOCKS; i ++){
+    file_map curFile = root_directory[i];
+
+    // If curFile has a null name or inode then clearly invalid
+    if (curFile.filename == NULL || curFile.inode <= 0) continue;
+
+
+    if (strcmp(name, curFile.filename)) return curFile.inode;
+  }
+
+  // If no file found then return -1
+  return -1;
+}
 
 void init_superblock() {
   sb.magic = 0xACBD0005;
@@ -153,6 +186,10 @@ void init_superblock() {
   sb.root_dir_inode = 0;
 }
 
+
+//////////////////////////////////////////////////////////////////////////////
+///////////////////////// API METHODS //////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
 void mksfs(int fresh) {
 	//Implement mksfs here
   // Formats the virtual disk implemented
@@ -168,42 +205,44 @@ void mksfs(int fresh) {
 
     // In disk emu
     init_fresh_disk(MY_DISK, BLOCK_SZ, NUM_BLOCKS);
-    write_blocks(0, 1, &sb);
-    
+
     // Free block list
     // Clear the bitmap
+    // could probs declare this statically above
+    // all of the params known
     for (int i = 0; i < FREE_BITMAP_SIZE; i++){
       free_space_bitmap[i] = 255;
     }
 
-    // Write superblock as first block (one block of space)
-    mark_block_at(1, 0);
 
+    // write super block
+    write_blocks_plus_mark(0, 1, &sb);
     // write inode table
-    write_blocks(1, sb.inode_table_len, table);
-
-
-    printf("%" PRIu64 "\n", sb.block_size);
-
-
+    // TODO figure out this inode stuff
+    write_blocks_plus_mark(1, sb.inode_table_len, inode_table);
   } 
   else {
     // File system is opened from disk
-
+    // TODO getting out of bound errors
+    // Might have to do some buffer stuff in here
     printf("reopening file system\n");
     // open super block
     read_blocks(0, 1, &sb);
     printf("Block Size is: %lu\n", sb.block_size);
     // open inode table
-    read_blocks(1, sb.inode_table_len, table);
+    read_blocks(1, sb.inode_table_len, inode_table);
 
     // open free block list
+    //read_blocks(NUM_BLOCKS-FREE_BITMAP_BLOCKS, FREE_BITMAP_BLOCKS, &free_space_bitmap);
+    //
+    // read the root directory in
   }
 
   return;
 }
 
 int sfs_getnextfilename(char *fname) {
+
   // Copies the name of the next file in the directory into fname
   // Returns a non-zero if there is a new file
   // Once all of the files have been returned, this function returns 0
@@ -257,6 +296,33 @@ int sfs_fopen(char *name) {
   // set the rwptr to be at the end of file
 
 
+  // See if the name exceeds the max
+  // The name passed in will include the extension I believe
+  //      i.e. some_name.txt
+  if (strlen(name) > MAXFILENAME) return -1;
+
+  // Find the file in the file map
+  //    This will return an inode if there is a file, -1 otherwise
+  uint64_t iNodeNum = get_inode_from_name(name);
+
+  // Create the file if it doesn't already exist
+  if (iNodeNum == -1){
+    printf("No file found, creating one");
+
+    // Create an inode, return said inode
+    iNodeNum = create_inode();
+    // Need to create an inode, root_directory entry, and 
+    // Method will create an inode at the next available slot
+    // iNodeNum = create_inode();
+  }
+  else{
+    // TODO check to see if the file is already open???
+  }
+
+
+  // uint64_t fileID = getNextAvailable
+
+
   uint64_t test_file = 1;
 
   fdt[test_file].inode = 1;
@@ -277,7 +343,7 @@ int sfs_fclose(int fileID){
 int sfs_fread(int fileID, char *buf, int length){
 
   file_descriptor* f = &fdt[fileID];
-  inode_t* n = &table[f->inode];
+  inode_t* n = &inode_table[f->inode];
 
   int block = n->data_ptrs[0];
   read_blocks(block, 1, (void*) buf);
@@ -302,8 +368,12 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   //    Bytes you want to write go to end of previous bytes already part of file
   //    After writing bytes, flush block to disk
 
+
+  // Allocate disk blocks (mark them as allocated in free block list)
+
+
   file_descriptor* f = &fdt[fileID];
-  inode_t* n = &table[fileID];
+  inode_t* n = &inode_table[fileID];
 
     /*
      * We know block 1 is free because this is a canned example
