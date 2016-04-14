@@ -22,11 +22,11 @@
 //        Disk considered as a bunch of blocks
 //        All the meta info (size,mode,ownership) associated with the inode
 //        I-node structure
-//            Mode
-//            Link count
-//            UID
-//            GID
-//            Size
+//            Mode: file type, how the owner and group and others can access
+//            Link count: How many hard links point to the inode (one in this case)
+//            UID: User id
+//            GID: Group id
+//            Size: size in bytes
 //            Pointer 1
 //            ...
 //            Pointer 12
@@ -90,7 +90,7 @@ int seen = 0;
 superblock_t sb;
 inode_t inode_table[NUM_INODES];
 
-file_descriptor fdt[NUM_INODES];
+file_descriptor fd_table[NUM_INODES];
 
 file_map root_directory[NUM_INODES]; 
 
@@ -174,7 +174,8 @@ uint64_t get_inode_from_name(char* name){
     if (curFile.filename == NULL || curFile.inode <= 0) continue;
 
 
-    if (strcmp(name, curFile.filename)) return curFile.inode;
+    if (strncmp(name, curFile.filename,MAXFILENAME) == 0) return curFile.inode;
+    if (DEBUG) printf("Comparing %s,%s\n", name, curFile.filename);
   }
 
   // If no file found then return -1
@@ -191,7 +192,14 @@ uint64_t create_inode(){
       inode_table[i].mode = 0;
       inode_table[i].link_cnt = 0;
       inode_table[i].size = 0;
-      
+      // Get the next free block and mark it as taken
+      // Again, might not be the most efficient implementation
+      // TODO actually, should probably put this as -1...
+      // Set when I have something to write
+      int nextFree = getNextFreeBlock();
+      free_space_bitmap[nextFree] = 0;
+      inode_table[i].EOF_block = nextFree; 
+      inode_table[i].EOF_offset = 0;
       // Return the index of the inode
       return i;
     }
@@ -200,6 +208,27 @@ uint64_t create_inode(){
   return -1;
 }
 
+
+uint64_t getRWPosition(int iNodeNum){
+  return 0;  
+
+}
+
+
+/* I don't think this is necessary... just indexing off inode number
+uint64_t get_next_fd(){
+  for (int i = 0; i < NUM_INODES; i ++){
+    // Overloading one of the fields... typically considered bad practice
+    // If inode is -1 then it is empty
+    if (fd_table[i].inode == -1){
+      // Return the index of the inode
+      return i;
+    }
+  }
+
+  return -1;
+}
+*/
 
 void init_superblock() {
   sb.magic = 0xACBD0005;
@@ -236,9 +265,16 @@ void mksfs(int fresh) {
     for (int i = 0; i < FREE_BITMAP_SIZE; i++){
       free_space_bitmap[i] = 255;
     }
-    // Set all of these for my naive overloading of mode
+    // Set all of these for my naive overloading of mode field
     for (int i = 0; i < NUM_INODES; i++){
       inode_table[i].mode = -1;
+      // Set this to be the first spot after the i-nodes
+      inode_table[i].EOF_block = 1+sb.inode_table_len+NUM_ROOTDIR_BLOCKS;
+      inode_table[i].EOF_offset = 0;
+    }
+    // Set all of these for my naive overloading of inode field
+    for (int i = 0; i < NUM_INODES; i++){
+      fd_table[i].inode = -1;
     }
 
 
@@ -297,20 +333,6 @@ int sfs_getfilesize(const char* path) {
 }
 
 int sfs_fopen(char *name) {
-  // If file exists
-  //    Opens a file and returns the index that corresponds 
-  //      to newly opened file in FD table
-  //    Opened in append mode (file pointer set to end of file)
-  // If not exist, 
-  //    creates a new file and sets its size to 0
-  //    
-
-  // An entry created in FD table created when file opened
-  //    Return the index of that newly opened file (file descriptor) from this method
-  // Save the i-node number and r/w pointer here
-  //    I-node number is the one corresponding to the file
-  //    r/w pointer set to end of file (to append)
-
 // Create a file (part of the open() call)
 //    Allocate and init an inode
 //        Need to somehow remember state of inode table to find which inode
@@ -320,24 +342,13 @@ int sfs_fopen(char *name) {
 //    No disk data block allocated (size set to 0)
 //    Can also "open" the file for transactions (r/w)
 
-  //////////
-  // Check if file exists
-  // if file exists
-  //    inodeNum = get i-node number
-  // else
-  //    inodeNum = create file
-  //    set size to 0
-  //  
-  // create a new file descriptor table entry
-  // set the indode to inodeNum
-  // set the rwptr to be at the end of file
 
 
   // See if the name exceeds the max
   // The name passed in will include the extension I believe
   //      i.e. some_name.txt
   if (DEBUG) printf("\nOpening %s \n", name);  
-  if (strlen(name) > MAXFILENAME) return -1;
+  if (strlen(name) >= MAXFILENAME+1) return -1;
 
   // Find the file in the file map
   //    This will return an inode if there is a file, -1 otherwise
@@ -345,41 +356,54 @@ int sfs_fopen(char *name) {
 
   // Create the file if it doesn't already exist
   if (iNodeNum == -1){
-    printf("No file found, creating one \n");
+    if (DEBUG) printf("No file found, creating one \n");
 
     // Need to create an inode, root_directory entry, and 
     // Method will create an inode at the next available slot
     iNodeNum = create_inode();
-    printf("File created at inode %d \n", iNodeNum);
+
+    // Perhaps could do this this way
+    // Rather naive but good for now
+    root_directory[iNodeNum].filename = name;
+    root_directory[iNodeNum].inode = iNodeNum;
+
+    if (DEBUG) printf("File created at inode %d \n", iNodeNum);
   }
   else{
     // TODO check to see if the file is already open???
+    // Done implicitly
   }
 
 
-  // uint64_t fileID = getNextAvailable
+  // Get the next available fd index and set the fields
+  // fd indexes are just going to be the inode numbers for now
+  uint64_t fd_idx = iNodeNum;
 
+  // If the file was not already open
+  if (fd_table[fd_idx].inode == -1){
+    // Set the inode number to be the proper inode
+    //    I-node number is the one corresponding to the file
+    fd_table[fd_idx].inode = iNodeNum;
+    
+  }
 
-  uint64_t test_file = 1;
+  if (DEBUG) printf("Returning FD %d\n", fd_idx);
 
-  fdt[test_file].inode = 1;
-  fdt[test_file].rwptr = 0;
-
-	return test_file;
+	return fd_idx;
 }
 
 int sfs_fclose(int fileID){
   // Closes a file
   // Removes the entry from the open file descriptor table
 
-  fdt[0].inode = 0;
-  fdt[0].rwptr = 0;
+  fd_table[0].inode = 0;
+  fd_table[0].rwptr = 0;
 	return 0;
 }
 
 int sfs_fread(int fileID, char *buf, int length){
 
-  file_descriptor* f = &fdt[fileID];
+  file_descriptor* f = &fd_table[fileID];
   inode_t* n = &inode_table[f->inode];
 
   int block = n->data_ptrs[0];
@@ -409,7 +433,7 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   // Allocate disk blocks (mark them as allocated in free block list)
 
 
-  file_descriptor* f = &fdt[fileID];
+  file_descriptor* f = &fd_table[fileID];
   inode_t* n = &inode_table[fileID];
 
     /*
@@ -438,7 +462,7 @@ int sfs_fseek(int fileID, int loc){
      * This is a very minimal implementation of fseek. You should add some type
      * of error checking before you submit this assignment
      */
-    fdt[fileID].rwptr = loc;
+    fd_table[fileID].rwptr = loc;
 	return 0;
 }
 

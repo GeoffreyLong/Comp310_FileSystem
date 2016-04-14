@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 // TODO does this include the 3 bits or not?
-#define MAXFILENAME 16
+#define MAXFILENAME 20
 
 typedef struct {
     uint64_t magic;
@@ -20,6 +20,11 @@ typedef struct {
     unsigned int uid;
     unsigned int gid;
     unsigned int size;
+    // These are used because I was unsure of how to define EOFs here
+    // Realistically a file could have 8 zero bits in a row, 
+    // don't want to kill a search prematurely and risk overwrites
+    unsigned int EOF_block; // The block the end of file is living in
+    unsigned int EOF_offset; // The offset the end of file is living in
     unsigned int data_ptrs[12];
     // TODO indirect pointer
 } inode_t;
@@ -29,8 +34,9 @@ typedef struct {
  * rwptr    where in the file to start
  */
 typedef struct {
-    uint64_t inode;
-    uint64_t rwptr;
+  uint64_t inode;
+  uint64_t rwptr;
+  //Might be cool to have a block offset and a within block offset...
 } file_descriptor;
 
 
