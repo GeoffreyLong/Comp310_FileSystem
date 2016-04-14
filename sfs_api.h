@@ -15,18 +15,19 @@ typedef struct {
 } superblock_t;
 
 typedef struct {
-    unsigned int mode;
-    unsigned int link_cnt;
-    unsigned int uid;
-    unsigned int gid;
-    unsigned int size;
-    // These are used because I was unsure of how to define EOFs here
-    // Realistically a file could have 8 zero bits in a row, 
-    // don't want to kill a search prematurely and risk overwrites
-    unsigned int EOF_block; // The block the end of file is living in
-    unsigned int EOF_offset; // The offset the end of file is living in
-    unsigned int data_ptrs[12];
-    // TODO indirect pointer
+  unsigned int mode;
+  unsigned int link_cnt;
+  unsigned int uid;
+  unsigned int gid;
+  unsigned int size;
+  // These are used because I was unsure of how to define EOFs here
+  // Realistically a file could have 8 zero bits in a row, 
+  // don't want to kill a search prematurely and risk overwrites
+  uint64_t EOF_block; // The block the end of file is living in
+  unsigned int EOF_offset; // The offset the end of file is living in
+  uint64_t data_ptrs[12];
+  // Indirect pointer is a 4 byte pointer to a block filled with inode ptrs
+  uint64_t indirect_ptr;
 } inode_t;
 
 /*
