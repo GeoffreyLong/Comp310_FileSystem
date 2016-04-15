@@ -359,9 +359,9 @@ void mksfs(int fresh) {
     // Clear the bitmap
     // could probs declare this statically above
     // all of the params known
-    //for (int i = 0; i < free_bitmap_size; i++){
-    //  free_space_bitmap[i] = 255;
-    //}
+    for (int i = 0; i < FREE_BITMAP_SIZE; i++){
+      free_space_bitmap[i] = 255;
+    }
     // Set all of these for my naive overloading of mode field
     for (int i = 0; i < NUM_INODES; i++){
       inode_table[i].mode = -1;
@@ -496,15 +496,33 @@ int sfs_fclose(int fileID){
   // Closes a file
   // Removes the entry from the open file descriptor table
 
-  fd_table[0].inode = 0;
-  fd_table[0].rwptr = 0;
+  // If there is no fd_table entry for the given ID then either closed
+  // Or the entry otherwise doesn't exist
+  if (fd_table[fileID].inode == 0){
+    printf("No such file descriptor entry at index %d", fileID);
+    return -1;
+  }
+
+  // If the entry does exist, reset both of the fields in the fd_table
+  // Return 0 for success
+  fd_table[fileID].inode = 0;
+  fd_table[fileID].rwptr = 0;
 	return 0;
 }
 
 int sfs_fread(int fileID, char *buf, int length){
-
-  file_descriptor* f = &fd_table[fileID];
+  // Want to read from the given fileID at the current offset
+  
+  // First, get the FD and inodes corresponding to the fileID
+  file_descriptor* fd = &fd_table[fileID];
   inode_t* n = &inode_table[f->inode];
+
+  // fileOffset is the byte location within the current block
+  int fileOffset = rwOffset % BLOCK_SZ;
+  if (fileOffset != 0){
+    
+  }
+
 
   int block = n->data_ptrs[0];
   read_blocks(block, 1, (void*) buf);
@@ -530,10 +548,15 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   //    After writing bytes, flush block to disk
 
 
-
   // fd and inode use same index, need both of them
   file_descriptor* fd = &fd_table[fileID];
   inode_t* inode = &inode_table[fileID];
+
+  // If the fd's inode is 0 then the fd entry is empty
+  if (fd->inode == 0){
+    printf("FD table is empty \n");
+    return 0;
+  }
 
   uint64_t curDataPageIdx = get_RW_block(fileID);
   if (DEBUG) printf("Block to write file to is %" PRId64 "\n", curDataPageIdx);
@@ -542,12 +565,13 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   int rwOffset = fd->rwptr;
   if (DEBUG) printf("RW offset %d \n", rwOffset);
 
+  ///////// WRITE TO PARTIALLY FILLED BLOCK //////////
   // fileOffset is the byte location within the current block
   int fileOffset = rwOffset % BLOCK_SZ;
   // This is the location within the buffer (how far through the data we are)
   int bufferIdx = 0;
   // There is a page that is partially filled, fill it the rest of the way
-  if (!fileOffset == 0){
+  if (fileOffset != 0){
     if (DEBUG) printf("Filling up remainder of partially filled page \n");
     // read block from current page
     char *curDataPage = calloc(1,BLOCK_SZ);
@@ -555,7 +579,6 @@ int sfs_fwrite(int fileID, const char *buf, int length){
 
     // Copy over buffer to fill remainder of space
     for (fileOffset; fileOffset < BLOCK_SZ; fileOffset ++){
-      printf("loopin");
       // Break out if have written all the bytes
       if (bufferIdx == length) break;
       curDataPage[fileOffset] = buf[bufferIdx];
@@ -568,7 +591,7 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   }
   
 
-  
+  ////////// WRITE TO FULL BLOCKS //////////
   // The remainder of the writes will only be full blocks
   while(bufferIdx != length){
     printf("Writing to file \n");
@@ -599,7 +622,7 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   write_blocks(1, sb.inode_table_len, inode_table);
 
 
-	return 0;
+	return bufferIdx;
 }
 
 int sfs_fseek(int fileID, int loc){
