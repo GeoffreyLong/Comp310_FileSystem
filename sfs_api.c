@@ -86,6 +86,7 @@ int seen = 0;
 // TODO define num root directory blocks
 #define NUM_ROOTDIR_BLOCKS 1
 #define DEBUG 1
+#define PTR_SIZE (sizeof(uint64_t)) // This is the default size for any pointer to index
 
 superblock_t sb;
 inode_t inode_table[NUM_INODES];
@@ -96,38 +97,58 @@ file_map root_directory[NUM_INODES];
 
 // Use a type that only takes up a single byte for ease of use
 // Originally had unsigned chars but uint_8 better demonstrates intent
-uint8_t free_space_bitmap[FREE_BITMAP_SIZE];
-
+uint8_t free_space_bitmap[FREE_BITMAP_SIZE] = { [0 ... FREE_BITMAP_SIZE-1] = UINT8_MAX };
 char* previousFileName;
 
-// TODO might want to mark in this method... 
-// I can't think of when you would get a free block if it isn't being used
-int getNextFreeBlock(){
-  int freeIndex = 0;
-  for (int i = 0; i < FREE_BITMAP_SIZE; i++){
-    uint8_t val = free_space_bitmap[i];
-    if (val != 0){
-      // 7 because I use uint_8
-      for (int j = 7; j >= 0; j --){
-        // If the jth bit is a 1 and the freeIndex is valid then return the value
-        if ((val & 1<<j) >> j && freeIndex <= NUM_BLOCKS) return freeIndex;
-        freeIndex += 1;
-      }
-    }
-    else{
-      // Since 8 bit
-      freeIndex += 8;
-    }
+/* macros */
+#define FREE_BIT(_data, _which_bit) \
+    _data = _data | (1 << _which_bit)
 
-  }
+#define USE_BIT(_data, _which_bit) \
+    _data = _data & ~(1 << _which_bit)
 
-  // If you cannot locate a free block return -1
-  return -1;
+
+//////////////// MARK BLOCK AS OCCUPIED /////////////////
+// From tutorials
+uint64_t getNextFreeBlock() {
+    uint64_t i = 0;
+
+    // find the first section with a free bit
+    // let's ignore overflow for now...
+    while (free_space_bitmap[i] == 0) { i++; }
+
+    // now, find the first free bit
+    // ffs has the lsb as 1, not 0. So we need to subtract
+    uint8_t bit = ffs(free_space_bitmap[i]) - 1;
+
+    // set the bit to used
+    USE_BIT(free_space_bitmap[i], bit);
+    
+    // Questionable position
+    write_blocks(NUM_BLOCKS-FREE_BITMAP_BLOCKS, FREE_BITMAP_BLOCKS, &free_space_bitmap);
+
+    //return which bit we used
+    return i*8 + bit;
+}
+// From tutorials
+void rm_index(uint32_t index) {
+
+    // get index in array of which bit to free
+    uint32_t i = index / 8;
+
+    // get which bit to free
+    uint8_t bit = index % 8;
+
+    // free bit
+    FREE_BIT(free_space_bitmap[i], bit);
 }
 
 
 
-// TODO error handling
+
+
+
+
 int mark_block_at(int blockIndex, int free){
   // The map index is the block index divided by the 8 bit size
   int mapIndex = blockIndex / 8;
@@ -153,18 +174,10 @@ int mark_block_at(int blockIndex, int free){
   return 0;
 }
 
-int write_blocks_plus_mark(int start_address, int nblocks, void *buffer){
-  // Write the buffer
-  write_blocks(start_address, nblocks, buffer);
-  
-  // Mark each block 
-  for (int i = 0; i < nblocks; i++){
-    mark_block_at(start_address + i, 0);
-  }
-  
-  return 0;
-}
 
+
+
+//////////////////// GET INODE FROM NAME /////////////////////
 // Get the inode number from the root directory using the name
 uint64_t get_inode_from_name(char* name){
   // Iterate over the entire directory in memory.
@@ -176,7 +189,8 @@ uint64_t get_inode_from_name(char* name){
     if (curFile.filename == NULL || curFile.inode <= 0) continue;
 
 
-    if (strncmp(name, curFile.filename,MAXFILENAME) == 0) return curFile.inode;
+    // Compare the two strings, return the inode if there is a match
+    if (strncmp(name, curFile.filename, MAXFILENAME) == 0) return curFile.inode;
     if (DEBUG) printf("Comparing %s,%s\n", name, curFile.filename);
   }
 
@@ -185,6 +199,8 @@ uint64_t get_inode_from_name(char* name){
 }
 
 
+//////////////////// CREATE AN INODE ////////////////////
+// These already exist in memory, so don't need to get next free blocks or anything
 uint64_t create_inode(){
   for (int i = 0; i < NUM_INODES; i ++){
     // Overloading one of the fields... typically considered bad practice
@@ -194,6 +210,7 @@ uint64_t create_inode(){
       inode_table[i].mode = 0;
       inode_table[i].link_cnt = 0;
       inode_table[i].size = 0;
+      inode_table[i].indirect_ptr = -1;
 
       // Might not need these
       inode_table[i].EOF_block = -1; 
@@ -207,8 +224,90 @@ uint64_t create_inode(){
 }
 
 
-uint64_t getRWPosition(int iNodeNum){
-  return 0;  
+uint64_t get_RW_block(int fileID){
+  // This function gets the block index from the rwpointer information (fileID)
+
+
+  // fd and inode use same index, need both of them
+  file_descriptor* fd = &fd_table[fileID];
+  inode_t* inode = &inode_table[fileID];
+
+  // Get the current file location to write to based on the rwptr
+  int rwOffset = fd->rwptr;
+  
+  // Get the current block pointed to by the RW pointer
+  int blockOffset = rwOffset / BLOCK_SZ;
+
+  // Get the location of the current block to be written
+  uint64_t curDataPageIdx;
+
+
+  if (blockOffset < 12){
+    if (DEBUG) printf("Acquiring data page from direct pointers \n");
+
+    // If it is a direct pointer then the corresponding block can be read directly
+    curDataPageIdx = inode->data_ptrs[blockOffset]; 
+
+    if (curDataPageIdx == 0){
+      curDataPageIdx = getNextFreeBlock();
+    }
+
+    return curDataPageIdx;
+  }
+  else{
+    if (DEBUG) printf("Acquiring data page from indirect pointers \n");
+    // Indirect pointers
+    // The indirect pointer will be the block index of the pointerPage
+    // This block will be filled with contiguous pointers to data pages
+    uint64_t indirPtr = inode->indirect_ptr;
+    char *pointerPage = calloc(1,BLOCK_SZ);
+    
+    // If the indirect ptr hasn't been set up yet
+    // Need to create a pointer page
+    if (indirPtr <=0){
+      if (DEBUG) printf("No indirect found, creating new indirect for inode %" PRId64 "  \n", fileID);
+
+      // Get the next free block and set the indirect pointer to be this location
+      indirPtr = getNextFreeBlock();
+      inode->indirect_ptr = indirPtr;
+
+      // Set up a data page as well
+      curDataPageIdx = getNextFreeBlock();
+      // Set the first index in the pointer page to be the current data page index
+      pointerPage[0] = curDataPageIdx;
+
+      return curDataPageIdx;
+    }
+    else{
+      if (DEBUG) printf("Indirect pointer found \n");
+      
+      // Read index page from memory (using the indirect pointer to get pointer page)
+      uint64_t *pointerPage = calloc(1,BLOCK_SZ);
+      read_blocks(indirPtr, 1, (void*) pointerPage);
+      
+      
+      // Iterate through pointer page to find first empty block
+      int i;
+      for (i = 0; i < BLOCK_SZ/PTR_SIZE; i += 1){ // TODO might want to error handle this size
+        // If the pointer at that location in the file is empty 
+        // then get a free block and have the pointer page point to it
+        if (pointerPage[i] == 0){
+          curDataPageIdx = getNextFreeBlock();
+          if (DEBUG) printf("Found new pointer slot for page %" PRId64 "  \n", curDataPageIdx);
+          pointerPage[i] = curDataPageIdx;
+          return curDataPageIdx;
+        }
+      }
+      // If i iterates all the way to block size, then the pointer page is full
+      // Cannot allocate any memory so quit
+      if (i == BLOCK_SZ){
+        if (DEBUG) printf("Unable to find free data pointer on inode \n");
+        return -1;
+      }
+    }
+  }
+
+  return -1;  
 
 }
 
@@ -260,9 +359,9 @@ void mksfs(int fresh) {
     // Clear the bitmap
     // could probs declare this statically above
     // all of the params known
-    for (int i = 0; i < FREE_BITMAP_SIZE; i++){
-      free_space_bitmap[i] = 255;
-    }
+    //for (int i = 0; i < free_bitmap_size; i++){
+    //  free_space_bitmap[i] = 255;
+    //}
     // Set all of these for my naive overloading of mode field
     for (int i = 0; i < NUM_INODES; i++){
       inode_table[i].mode = -1;
@@ -276,19 +375,21 @@ void mksfs(int fresh) {
     }
 
 
+    uint64_t firstBlock = getNextFreeBlock();
     // write super block
-    write_blocks_plus_mark(0, 1, &sb);
+    write_blocks(firstBlock, 1, &sb);
     
     // Create root directory
+    // Is this right?
     inode_table[sb.root_dir_inode].mode = 0;
-    // Is size the size of the table?
-    //inode_table[sb.root_dir_inode].size = 
-    // Should write this out to blocks
-    write_blocks_plus_mark(1+sb.inode_table_len, NUM_ROOTDIR_BLOCKS, root_directory);
+    write_blocks(1+sb.inode_table_len, NUM_ROOTDIR_BLOCKS, root_directory);
+    for (int i = 0; i < NUM_ROOTDIR_BLOCKS; i++){
+      getNextFreeBlock();
+    }
     
     // write inode table
     // TODO figure out this inode stuff
-    write_blocks_plus_mark(1, sb.inode_table_len, inode_table);
+    write_blocks(1, sb.inode_table_len, inode_table);
 
 
   } 
@@ -339,64 +440,56 @@ int sfs_fopen(char *name) {
 //        Simply update memory and disk copies
 //    No disk data block allocated (size set to 0)
 //    Can also "open" the file for transactions (r/w)
-
-
-
+  
   // See if the name exceeds the max
   // The name passed in will include the extension I believe
   //      i.e. some_name.txt
   if (DEBUG) printf("\nOpening %s \n", name);  
   if (strlen(name) >= MAXFILENAME+1) return -1;
 
+
+
+  // In this implementation the index for the iNode will be the same as the FD table
+  // So they can share this one index
   // Find the file in the file map
-  //    This will return an inode if there is a file, -1 otherwise
-  uint64_t iNodeNum = get_inode_from_name(name);
+  uint64_t index = get_inode_from_name(name);
 
   // Create the file if it doesn't already exist
-  if (iNodeNum == -1){
+  if (index == -1){
     if (DEBUG) printf("No file found, creating one \n");
 
-    // Need to create an inode, root_directory entry, and 
-    // Method will create an inode at the next available slot
-    iNodeNum = create_inode();
+    // Need to create an inode
+    index = create_inode();
 
-    // Perhaps could do indexing this way
-    // Might be naive but good for now
-    root_directory[iNodeNum].filename = name;
-    root_directory[iNodeNum].inode = iNodeNum;
+    // Add the file to the root directory
+    root_directory[index].filename = name;
+    root_directory[index].inode = index;
 
-    if (DEBUG) printf("File created at inode %d \n", iNodeNum);
-  }
-  else{
-    // TODO check to see if the file is already open???
-    // Done implicitly
+    if (DEBUG) printf("File created at inode %" PRId64 "  \n", index);
   }
 
 
-  // Get the next available fd index and set the fields
-  // fd indexes are just going to be the inode numbers for now
-  uint64_t fd_idx = iNodeNum;
-
-  // If the file was not already open
-  if (fd_table[fd_idx].inode == -1){
+  // fd_table.inode is initialized to -1
+  // So this is if the file was not already open
+  // Don't want to open it twice
+  if (fd_table[index].inode == -1){
     // Set the inode number to be the proper inode
-    //    I-node number is the one corresponding to the file
-    fd_table[fd_idx].inode = iNodeNum;
+    fd_table[index].inode = index;
   }
 
 
   // Set the rwptr to be the size
   // Assume there is no free space in a file, when it's written it remains tight
-  fd_table[fd_idx].rwptr = inode_table[iNodeNum].size;
+  fd_table[index].rwptr = inode_table[index].size;
 
-  // The inode table and root directory were modified, so write this to disk
-  write_blocks_plus_mark(1, sb.inode_table_len, inode_table);
-  write_blocks_plus_mark(1+sb.inode_table_len, NUM_ROOTDIR_BLOCKS, root_directory);
+  // The inode table and root directory were modified, so write these to disk
+  write_blocks(1, sb.inode_table_len, inode_table);
+  write_blocks(1+sb.inode_table_len, NUM_ROOTDIR_BLOCKS, root_directory);
 
 
-  if (DEBUG) printf("Returning FD %d\n", fd_idx);
+  if (DEBUG) printf("Returning FD %" PRId64 " \n", index);
 
-	return fd_idx;
+	return index;
 }
 
 int sfs_fclose(int fileID){
@@ -437,112 +530,73 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   //    After writing bytes, flush block to disk
 
 
-  // IMPORTANT: Don't forget to maintain the EOFs in the inode
 
-
-  // Allocate disk blocks (mark them as allocated in free block list)
-
+  // fd and inode use same index, need both of them
   file_descriptor* fd = &fd_table[fileID];
   inode_t* inode = &inode_table[fileID];
+
+  uint64_t curDataPageIdx = get_RW_block(fileID);
+  if (DEBUG) printf("Block to write file to is %" PRId64 "\n", curDataPageIdx);
   
-  // Get the current file location to write to based on the RWptr
+  // Get the current file location to write to based on the rwptr
   int rwOffset = fd->rwptr;
-  
-  // Get the current block pointed to by the RW pointer
-  int blockOffset = rwOffset / BLOCK_SZ;
+  if (DEBUG) printf("RW offset %d \n", rwOffset);
 
-  // Want to get the current data page pointed to by the rwptr 
-  uint64_t curDataPageIdx;
-  if (blockOffset < 12){
-    if (DEBUG) printf("Acquiring data page from direct pointers \n");
-    // If it is a direct pointer then the corresponding block can be read directly
-    curDataPageIdx = inode->data_ptrs[blockOffset]; 
-  }
-  else{
-    if (DEBUG) printf("Acquiring data page from indirect pointers \n");
-    // Indirect pointers
-    // The indirect pointer will be a pointer to a block in memory
-    // This block will be filled with contiguous pointers to data pages
-    uint64_t indirPtr = inode->indirect_ptr;
-    char *pointerPage = calloc(1,BLOCK_SZ);
-    
-    // If the indirect ptr hasn't been set up yet, then this will trigger
-    // The pointer page itself will just be empty
-    if (indirPtr <=0){
-      if (DEBUG) printf("No indirect found, creating new indirect for inode %d \n", fileID);
-
-      // Get the next free block and set the indirect pointer to be this location
-      indirPtr = getNextFreeBlock();
-      inode->indirect_ptr = indirPtr;
-
-      // This only gets the pointer page though
-      // Need to set up a data page as well
-      curDataPageIdx = getNextFreeBlock();
-      // Set the first index in the pointer page to be the current data page index
-      pointerPage[0] = curDataPageIdx;
-      //TODO write this back out as block
-    }
-    else{
-      if (DEBUG) printf("Indirect pointer found");
-      
-      // Read index page from memory
-      uint64_t *pointerPage = calloc(1,BLOCK_SZ);
-      read_blocks(indirPtr, 1, (void*) pointerPage);
-      
-      
-      // from 0 to the block size, iterating in 8 byte increments (64 bits)
-      // NOTE this might be too many bytes, seems unnecessary 
-      // Iterate through pointer page to find first empty block
-      int i;
-      for (i = 0; i < BLOCK_SZ/8; i += 1){ // TODO might want to error handle this size
-        if (pointerPage[i] == 0){
-          curDataPageIdx = getNextFreeBlock();
-          if (DEBUG) printf("Found new pointer slot for page %d \n", curDataPageIdx);
-          pointerPage[i] = curDataPageIdx;
-          break;
-        }
-      }
-      // If i iterates all the way to block size, then the pointer page is full
-      if (i == BLOCK_SZ){
-        if (DEBUG) printf("Unable to find free data pointer on inode \n");
-      }
-    }
-  }
-
-
-  // fileOffset is the byte location within the current file
+  // fileOffset is the byte location within the current block
   int fileOffset = rwOffset % BLOCK_SZ;
   // This is the location within the buffer (how far through the data we are)
   int bufferIdx = 0;
   // There is a page that is partially filled, fill it the rest of the way
-  if (!rwOffset == 0){
+  if (!fileOffset == 0){
     if (DEBUG) printf("Filling up remainder of partially filled page \n");
     // read block from current page
     char *curDataPage = calloc(1,BLOCK_SZ);
     read_blocks(curDataPageIdx, 1, (char*) curDataPage);
 
+    // Copy over buffer to fill remainder of space
     for (fileOffset; fileOffset < BLOCK_SZ; fileOffset ++){
+      printf("loopin");
+      // Break out if have written all the bytes
+      if (bufferIdx == length) break;
       curDataPage[fileOffset] = buf[bufferIdx];
       fileOffset += 1;
     }
-    write_blocks_plus_mark(curDataPageIdx, 1, &curDataPage);
+
+    // write the blocks to memory
+    write_blocks(curDataPageIdx, 1, &curDataPage);
     curDataPageIdx = getNextFreeBlock();
   }
   
+
   
-  while(fileOffset != length){
-    printf("Writing to file");
+  // The remainder of the writes will only be full blocks
+  while(bufferIdx != length){
+    printf("Writing to file \n");
+
+    // Copy the buffer into a temporary block size element
     char *curDataPage = calloc(1,BLOCK_SZ);
-    // memcpy didn't want to work
     for (int i = 0; i < BLOCK_SZ; i ++){
-      curDataPage[i] = buf[fileOffset];
-      fileOffset += 1;
+      if (bufferIdx >= length) break;
+      curDataPage[i] = buf[bufferIdx];
+      // if (DEBUG) printf("%c", buf[i]);
+      bufferIdx += 1;
+      fd->rwptr += 1;
     }
-    write_blocks_plus_mark(curDataPageIdx, 1, &curDataPage);
-    curDataPageIdx = getNextFreeBlock();
-    break;
+
+    // Update size of inode
+    // If the rwptr has a larger offset than the inode size then size increases
+    // Assume optimal file writing
+    if (fd->rwptr > inode->size) inode->size = fd->rwptr;
+    // Write the block and get the next block to write
+    write_blocks(curDataPageIdx, 1, &curDataPage);
+
+    curDataPageIdx = get_RW_block(fileID);
+
   }
 
+
+  // Write back to inode
+  write_blocks(1, sb.inode_table_len, inode_table);
 
 
 	return 0;
