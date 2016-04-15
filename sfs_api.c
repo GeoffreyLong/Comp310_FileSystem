@@ -72,7 +72,7 @@
 #include <inttypes.h>
 int seen = 0;
 
-#define MY_DISK "sfs_disk.disk"
+#define MY_DISK "tmp/sfs_disk.disk"
 #define BLOCK_SZ 1024
 #define NUM_BLOCKS 100  //TODO: increase
 #define NUM_INODES 10   //TODO: increase
@@ -224,9 +224,10 @@ uint64_t create_inode(){
 }
 
 
-uint64_t get_RW_block(int fileID){
+uint64_t get_RW_block(int fileID, int write){
   // This function gets the block index from the rwpointer information (fileID)
-
+  // If the write flag is on then we are in write mode, (write == 1)
+  //    This will also allocate the blocks
 
   // fd and inode use same index, need both of them
   file_descriptor* fd = &fd_table[fileID];
@@ -248,8 +249,18 @@ uint64_t get_RW_block(int fileID){
     // If it is a direct pointer then the corresponding block can be read directly
     curDataPageIdx = inode->data_ptrs[blockOffset]; 
 
+    // If the index is 0 then it is empty
+    // Create a pointer to a page if write
     if (curDataPageIdx == 0){
-      curDataPageIdx = getNextFreeBlock();
+      if (write == 1){
+        curDataPageIdx = getNextFreeBlock();
+        inode->data_ptrs[blockOffset] = curDataPageIdx;
+        return curDataPageIdx;
+      }
+
+      // If trying to read from empty then we have a problem
+      if (DEBUG) printf("Attempting to read from invalid location" PRId64 "  \n", fileID);
+      return -1;
     }
 
     return curDataPageIdx;
@@ -264,19 +275,26 @@ uint64_t get_RW_block(int fileID){
     
     // If the indirect ptr hasn't been set up yet
     // Need to create a pointer page
+    // The farthest an RW pointer will be is pointing to this first page
+    // Probably has a block offset of 12
     if (indirPtr <=0){
-      if (DEBUG) printf("No indirect found, creating new indirect for inode %" PRId64 "  \n", fileID);
+      if (write == 1){
+        if (DEBUG) printf("No indirect found, creating new indirect for inode %" PRId64 "  \n", fileID);
 
-      // Get the next free block and set the indirect pointer to be this location
-      indirPtr = getNextFreeBlock();
-      inode->indirect_ptr = indirPtr;
+        // Get the next free block and set the indirect pointer to be this location
+        indirPtr = getNextFreeBlock();
+        inode->indirect_ptr = indirPtr;
 
-      // Set up a data page as well
-      curDataPageIdx = getNextFreeBlock();
-      // Set the first index in the pointer page to be the current data page index
-      pointerPage[0] = curDataPageIdx;
+        // Set up a data page as well
+        curDataPageIdx = getNextFreeBlock();
+        // Set the first index in the pointer page to be the current data page index
+        pointerPage[0] = curDataPageIdx;
 
-      return curDataPageIdx;
+        return curDataPageIdx;
+      }
+      // If trying to read from empty then we have a problem
+      if (DEBUG) printf("Attempting to read from invalid location" PRId64 "  \n", fileID);
+      return -1;
     }
     else{
       if (DEBUG) printf("Indirect pointer found \n");
@@ -285,25 +303,38 @@ uint64_t get_RW_block(int fileID){
       uint64_t *pointerPage = calloc(1,BLOCK_SZ);
       read_blocks(indirPtr, 1, (void*) pointerPage);
       
-      
-      // Iterate through pointer page to find first empty block
-      int i;
-      for (i = 0; i < BLOCK_SZ/PTR_SIZE; i += 1){ // TODO might want to error handle this size
-        // If the pointer at that location in the file is empty 
-        // then get a free block and have the pointer page point to it
-        if (pointerPage[i] == 0){
-          curDataPageIdx = getNextFreeBlock();
-          if (DEBUG) printf("Found new pointer slot for page %" PRId64 "  \n", curDataPageIdx);
-          pointerPage[i] = curDataPageIdx;
-          return curDataPageIdx;
-        }
-      }
+      // We know that the block offset is at least 12
+      // Now have to find the offset on the pointer page
+      // TODO I think this is causing issues from writing currupted data from disk
+      blockOffset -= 12;
+      curDataPageIdx = pointerPage[blockOffset];
+
       // If i iterates all the way to block size, then the pointer page is full
       // Cannot allocate any memory so quit
-      if (i == BLOCK_SZ){
+      if (blockOffset >= BLOCK_SZ/PTR_SIZE){
         if (DEBUG) printf("Unable to find free data pointer on inode \n");
         return -1;
       }
+
+      // If the data page does not exist and there is a write, then create it
+      if (curDataPageIdx == 0){
+        if (write == 1){
+          // Get the next free block
+          // Set the proper pointer on the idirect page
+          // Write the indirect page back to disk
+          curDataPageIdx = getNextFreeBlock();
+          if (DEBUG) printf("Create new pointer slot for page %" PRId64 "  \n", curDataPageIdx);
+          pointerPage[blockOffset] = curDataPageIdx;
+          write_blocks(indirPtr, 1, pointerPage);
+          return curDataPageIdx;
+        }
+        // If trying to read from empty then we have a problem
+        if (DEBUG) printf("Attempting to read from invalid location \n");
+        return -1;
+      }
+
+      return curDataPageIdx;
+
     }
   }
 
@@ -499,7 +530,7 @@ int sfs_fclose(int fileID){
   // If there is no fd_table entry for the given ID then either closed
   // Or the entry otherwise doesn't exist
   if (fd_table[fileID].inode == 0){
-    printf("No such file descriptor entry at index %d", fileID);
+    printf("No such file descriptor entry at index %d \n", fileID);
     return -1;
   }
 
@@ -515,18 +546,43 @@ int sfs_fread(int fileID, char *buf, int length){
   
   // First, get the FD and inodes corresponding to the fileID
   file_descriptor* fd = &fd_table[fileID];
-  inode_t* n = &inode_table[f->inode];
+  inode_t* inode = &inode_table[fd->inode];
+
+  // If the fd's inode is 0 then the fd entry is empty
+  if (fd->inode == 0){
+    printf("FD table is empty \n");
+    return 0;
+  }
+
+  // Get the current file location to write to based on the rwptr
+  int rwOffset = fd->rwptr;
+  if (DEBUG) printf("RW offset %d \n", rwOffset);
+  
 
   // fileOffset is the byte location within the current block
+  // Also get the block to be read to from the current RW pointer location
   int fileOffset = rwOffset % BLOCK_SZ;
-  if (fileOffset != 0){
-    
+  int curDataBlockIdx = get_RW_block(fileID, 0);
+  
+
+  int bufferIdx = 0;
+  while(bufferIdx < length){
+    // Read the whole block from memory... cannot read a partial block
+    char *tempBlock = calloc(1,BLOCK_SZ);
+    read_blocks(curDataBlockIdx, 1, (void*) tempBlock);
+
+    // Iterate over the block starting at the file offset
+    // Copy one byte at a time into the buffer
+    for (fileOffset = fileOffset; fileOffset < BLOCK_SZ; fileOffset ++){
+      if (bufferIdx == length) break;
+      buf[bufferIdx] = tempBlock[fileOffset];
+      bufferIdx ++;
+    }
+    fileOffset = 0;
   }
 
 
-  int block = n->data_ptrs[0];
-  read_blocks(block, 1, (void*) buf);
-	return 0;
+	return bufferIdx;
 }
 
 int sfs_fwrite(int fileID, const char *buf, int length){
@@ -558,7 +614,7 @@ int sfs_fwrite(int fileID, const char *buf, int length){
     return 0;
   }
 
-  uint64_t curDataPageIdx = get_RW_block(fileID);
+  uint64_t curDataPageIdx = get_RW_block(fileID, 1);
   if (DEBUG) printf("Block to write file to is %" PRId64 "\n", curDataPageIdx);
   
   // Get the current file location to write to based on the rwptr
@@ -578,7 +634,7 @@ int sfs_fwrite(int fileID, const char *buf, int length){
     read_blocks(curDataPageIdx, 1, (char*) curDataPage);
 
     // Copy over buffer to fill remainder of space
-    for (fileOffset; fileOffset < BLOCK_SZ; fileOffset ++){
+    for (fileOffset = fileOffset; fileOffset < BLOCK_SZ; fileOffset ++){
       // Break out if have written all the bytes
       if (bufferIdx == length) break;
       curDataPage[fileOffset] = buf[bufferIdx];
@@ -613,8 +669,8 @@ int sfs_fwrite(int fileID, const char *buf, int length){
     // Write the block and get the next block to write
     write_blocks(curDataPageIdx, 1, &curDataPage);
 
-    curDataPageIdx = get_RW_block(fileID);
-
+    // Double checks
+    if (bufferIdx != length) curDataPageIdx = get_RW_block(fileID, 1);
   }
 
 
