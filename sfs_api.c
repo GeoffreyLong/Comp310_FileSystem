@@ -84,7 +84,7 @@ int seen = 0;
 #define NUM_INODE_BLOCKS (sizeof(inode_t) * NUM_INODES / BLOCK_SIZE + 1) 
 // TODO figure this out
 #define NUM_ROOTDIR_BLOCKS 1
-
+#define PTR_SIZE (sizeof(int))
 /* macros */
 #define FREE_BIT(_data, _which_bit) \
     _data = _data | (1 << _which_bit)
@@ -114,10 +114,11 @@ int get_next_free_block() {
     // find the first section with a free bit
     // let's ignore overflow for now...
     while (free_bit_map[i] == 0) { i++; }
-
     // now, find the first free bit
     // ffs has the lsb as 1, not 0. So we need to subtract
     uint8_t bit = ffs(free_bit_map[i]) - 1;
+
+    printf("Grabbing block at char %d bit %d \n", i, bit);
 
     // set the bit to used
     USE_BIT(free_bit_map[i], bit);
@@ -388,7 +389,7 @@ int get_RW_block(int fileID, int write){
   int blockOffset = rwOffset / BLOCK_SIZE;
 
   // Get the location of the current block to be written
-  uint64_t curDataPageIdx;
+  int curDataPageIdx = 0;
   
   // If the blockOffset < 12 then the rwOffset points to a direct pointer block
   if (blockOffset < 12){
@@ -407,12 +408,86 @@ int get_RW_block(int fileID, int write){
       }
 
       // If trying to read from empty then we have a problem
-      if (DEBUG) printf("Attempting to read from uninst dir ptr #%d \n", fileID);
+      if (DEBUG) printf("Attempting to read from uninst dir ptr #%d \n", blockOffset);
+      return -1;
+    }
+
+    return curDataPageIdx;
+  }
+  else{
+    // Reading from indirect pointers
+
+    if (DEBUG) printf("Acquiring data page from indirect pointers \n");
+    // Indirect pointers
+    // The indirect pointer will be the block index of the pointerPage
+    // This block will be filled with contiguous pointers to data pages
+    int indirPtr = inode->indirect_ptr;
+    char *pointerPage = calloc(1,BLOCK_SIZE);
+    
+    // If the indirect ptr hasn't been set up yet
+    // Need to create a pointer page
+    // The farthest an RW pointer will be is pointing to this first page
+    // Probably has a block offset of 12
+    if (indirPtr <=0){
+      if (write == 1){
+        if (DEBUG) printf("No indirect found, creating new indirect for inode %d \n", fileID);
+
+        // get the next free block and set the indirect pointer to be this location
+        indirPtr = get_next_free_block();
+        inode->indirect_ptr = indirPtr;
+
+        // set up a data page as well
+        curDataPageIdx = get_next_free_block();
+        // set the first index in the pointer page to be the current data page index
+        pointerPage[0] = curDataPageIdx;
+
+        return curDataPageIdx;
+      }
+      // if trying to read from empty then we have a problem
+      if (DEBUG) printf("Attempting to read from uninst indir ptr for inode #%d \n", fileID);
       return -1;
     }
     else{
-      // Reading from indirect pointers
+      // Get the indirect ptr
+      // Read the ptr page from ptr
+      // get the index - 12 th page from the ptr page
+      // If write and no index-12 then get a new block and link this page to that
+      // else return the index-12
+      int *pointerPage = calloc(1,BLOCK_SIZE);
+      read_blocks(indirPtr, 1, (void*) pointerPage);
+      
+      // we know that the block offset is at least 12
+      // now have to find the offset on the pointer page
+      // todo i think this is causing issues from writing currupted data from disk
+      blockOffset -= 12;
+      curDataPageIdx = pointerPage[blockOffset];
+      if (DEBUG) printf("Indirect pointer found at %d \n", blockOffset);
 
+      // if i iterates all the way to block size, then the pointer page is full
+      // cannot allocate any memory so quit
+      if (blockOffset >= BLOCK_SIZE/PTR_SIZE){
+        if (DEBUG) printf("Inode is full on inode #%d \n", fileID);
+        return -1;
+      }
+
+      // If the data page does not exist and there is a write, then create it
+      if (curDataPageIdx == 0){
+        if (write == 1){
+          // Get the next free block
+          // Set the proper pointer on the idirect page
+          // Write the indirect page back to disk
+          curDataPageIdx = get_next_free_block();
+          if (DEBUG) printf("Create new pointer slot for page %d  \n", curDataPageIdx);
+          pointerPage[blockOffset] = curDataPageIdx;
+          write_blocks(indirPtr, 1, pointerPage);
+          return curDataPageIdx;
+        }
+        // If trying to read from empty then we have a problem
+        if (DEBUG) printf("Attempting to read from uninst indir ptr for inode #%d \n", fileID);
+        return -1;
+      }
+
+      return curDataPageIdx;
 
     }
 
@@ -452,10 +527,15 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   int bufferIdx = 0;
 
   while (bufferIdx < length){
+    printf("\n\n");
     // read block from current page
-    char *srcBuf = calloc(1,BLOCK_SIZE);
+    char *dataBuf = malloc(BLOCK_SIZE);
     // Unnecessary overhead
-    read_blocks(curDataPageIdx, 1, (char*) srcBuf);
+    read_blocks(curDataPageIdx, 1, dataBuf);
+    //for (int i = 0; i < BLOCK_SIZE; i++){
+    //  printf("%c \n", dataBuf[i]);
+      //printf("d:%c b:%c \n", dataBuf[i], buf[i]);
+    //}
 
     // Set the number of characters to copy within the block
     int numCharsToCopy = (BLOCK_SIZE-fileOffset);  
@@ -464,10 +544,18 @@ int sfs_fwrite(int fileID, const char *buf, int length){
     if (DEBUG) printf("Writing %d of %d bytes to block %d \n", numCharsToCopy, length, curDataPageIdx);
 
     // copy the page into the buffer
-    memcpy(&buf[bufferIdx], &srcBuf[fileOffset], numCharsToCopy * sizeof(char));
+    memcpy(dataBuf + fileOffset, buf + bufferIdx, numCharsToCopy);
+
+    //for (int i = 0; i < length; i++){
+    //  printf("%c", &buf[i]);
+    //}
+    //printf("\n\n");
+
+    // write the blocks to memory
+    write_blocks(curDataPageIdx, 1, dataBuf);
 
     // Free the source buffer
-    free(srcBuf);
+    free(dataBuf);
 
     // Update rwptr, the file size, and the current buffer idx
     // If the rwptr has a larger offset than the inode size then size increases
@@ -477,11 +565,8 @@ int sfs_fwrite(int fileID, const char *buf, int length){
     bufferIdx += numCharsToCopy;
     fileOffset = 0;
 
-    // write the blocks to memory
-    write_blocks(curDataPageIdx, 1, &srcBuf);
-
     // Double check and grab next chars
-    if (bufferIdx < length) curDataPageIdx = get_next_free_block();
+    if (bufferIdx < length) curDataPageIdx = get_RW_block(fileID, 1);
   }
 
 
