@@ -78,7 +78,6 @@ main(int argc, char **argv)
   int tmp;
 
   mksfs(1);                     /* Initialize the file system. */
-
   /* First we open two files and attempt to write data to them.
    */
   for (i = 0; i < 2; i++) {
@@ -95,7 +94,6 @@ main(int argc, char **argv)
     }
     filesize[i] = (rand() % (MAX_BYTES-MIN_BYTES)) + MIN_BYTES;
   }
-
   for (i = 0; i < 2; i++) {
     for (j = i + 1; j < 2; j++) {
       if (fds[i] == fds[j]) {

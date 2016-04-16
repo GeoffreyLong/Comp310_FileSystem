@@ -72,7 +72,8 @@
 #include <inttypes.h>
 int seen = 0;
 
-#define MY_DISK "tmp/sfs_disk.disk"
+//#define MY_DISK "sfs_disk.disk"
+#define MY_DISK "sfs_disk.sfs"
 #define BLOCK_SZ 1024
 #define NUM_BLOCKS 100  //TODO: increase
 #define NUM_INODES 10   //TODO: increase
@@ -89,6 +90,10 @@ int seen = 0;
 #define PTR_SIZE (sizeof(uint64_t)) // This is the default size for any pointer to index
 
 superblock_t sb;
+
+//superblock_t sb = {.magic = 0xACBD0005, .block_size = BLOCK_SZ,  .fs_size = NUM_BLOCKS * BLOCK_SZ,
+//                      .inode_table_len = NUM_INODE_BLOCKS, .root_dir_inode = 0};
+
 inode_t inode_table[NUM_INODES];
 
 file_descriptor fd_table[NUM_INODES];
