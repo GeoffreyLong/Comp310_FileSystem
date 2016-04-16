@@ -78,6 +78,7 @@ main(int argc, char **argv)
   int tmp;
 
   mksfs(1);                     /* Initialize the file system. */
+
   /* First we open two files and attempt to write data to them.
    */
   for (i = 0; i < 2; i++) {
@@ -94,6 +95,7 @@ main(int argc, char **argv)
     }
     filesize[i] = (rand() % (MAX_BYTES-MIN_BYTES)) + MIN_BYTES;
   }
+
   for (i = 0; i < 2; i++) {
     for (j = i + 1; j < 2; j++) {
       if (fds[i] == fds[j]) {
@@ -129,7 +131,7 @@ main(int argc, char **argv)
       free(buffer);
     }
   }
-
+return;
   if (sfs_fclose(fds[1]) != 0) {
     fprintf(stderr, "ERROR: close of handle %d failed\n", fds[1]);
     error_count++;
@@ -153,8 +155,8 @@ main(int argc, char **argv)
 
   fds[1] = sfs_fopen(names[1]);
   
-  sfs_fseek(0, 0);
-  sfs_fseek(1, 0);
+  sfs_fseek(fds[0], 0);
+  sfs_fseek(fds[1], 0);
   
   for (i = 0; i < 2; i++) {
     for (j = 0; j < filesize[i]; j += chunksize) {

@@ -116,7 +116,7 @@ main(int argc, char **argv)
     }
     filesize[i] = (rand() % (MAX_BYTES-MIN_BYTES)) + MIN_BYTES;
   }
-  sfs_remove(names[0]);
+
   for (i = 0; i < 2; i++) {
     for (j = i + 1; j < 2; j++) {
       if (fds[i] == fds[j]) {
@@ -181,8 +181,8 @@ main(int argc, char **argv)
 
   fds[1] = sfs_fopen(names[1]);
   
-  sfs_fseek(0, 0);
-  sfs_fseek(1, 0);
+  sfs_fseek(fds[0], 0);
+  sfs_fseek(fds[1], 0);
   
   for (i = 0; i < 2; i++) {
     for (j = 0; j < filesize[i]; j += chunksize) {
