@@ -101,7 +101,7 @@ file_map root_directory[NUM_INODES];
 
 
 // Flag for debugging printing
-int DEBUG = 1;
+int DEBUG = -1;
 // Index for iterating over files in sfs_getnextfilename()
 int nextFilenameIdx = 0;
 
@@ -118,7 +118,13 @@ int get_next_free_block() {
     // ffs has the lsb as 1, not 0. So we need to subtract
     uint8_t bit = ffs(free_bit_map[i]) - 1;
 
-    printf("Grabbing block at char %d bit %d \n", i, bit);
+    // The map is full
+    if (i*8 + bit >= NUM_BLOCKS){
+      if (DEBUG==1) printf("Unable to allocate a block \n");
+      return -1;
+    }
+
+    if (DEBUG==1) printf("Grabbing block at char %d bit %d \n", i, bit);
 
     // set the bit to used
     USE_BIT(free_bit_map[i], bit);
@@ -195,7 +201,7 @@ void mksfs(int fresh) {
   // Open file descriptor table, inode cache, disk block cache, root dir cache
   if (fresh) {	
     // File system is created from scratch
-    if (DEBUG) printf("making new file system\n");
+    if (DEBUG==1) printf("making new file system\n");
 
     // create super block
     init_superblock();
@@ -224,10 +230,10 @@ void mksfs(int fresh) {
     write_blocks(get_next_free_block(), sb.inode_table_len, inode_table);
   } 
   else {
-    printf("reopening file system\n");
+    if (DEBUG==1) printf("reopening file system\n");
     // open super block
     read_blocks(0, 1, &sb);
-    printf("Block Size is: %lu\n", sb.block_size);
+    if (DEBUG==1) printf("Block Size is: %lu\n", sb.block_size);
     // open inode table
     read_blocks(1, NUM_INODE_BLOCKS, inode_table);
 
@@ -246,7 +252,7 @@ int sfs_get_next_filename(char *fname) {
 
   // Get the next file name according to the indexing variable 
   file_map curFile = root_directory[nextFilenameIdx];
-  printf("%d", curFile.inode);
+  if (DEBUG==1) printf("%d", curFile.inode);
   // If curFile has a null name or inode then clearly invalid
   if (curFile.filename == NULL || curFile.inode <= 0) {
     nextFilenameIdx = 0;
@@ -284,7 +290,7 @@ int get_inode_from_name(const char* name){
     if (nextFilenameIdx >= NUM_INODES) return -1;
     
     // Compare the two strings, return the inode if there is a match
-    if (DEBUG) printf("Comparing %s,%s\n", copyName, name);
+    if (DEBUG==1) printf("Comparing %s,%s\n", copyName, name);
     if (strncmp(copyName, name, MAXFILENAME) == 0) return inode;
   }
 
@@ -308,7 +314,7 @@ int get_inode_from_name(char* name){
 
     // Compare the two strings, return the inode if there is a match
     if (strncmp(name, curFile.filename, MAXFILENAME) == 0) return curFile.inode;
-    if (DEBUG) printf("Comparing %s,%s\n", name, curFile.filename);
+    if (DEBUG==1) printf("Comparing %s,%s\n", name, curFile.filename);
   }
 
   // If no file found then return -1
@@ -327,7 +333,7 @@ int sfs_fopen(char *name) {
   // See if the name exceeds the max
   // The name passed in will include the extension I believe
   //      i.e. some_name.txt
-  if (DEBUG) printf("\nOpening %s \n", name);  
+  if (DEBUG==1) printf("\nOpening %s \n", name);  
   if (strlen(name) >= MAXFILENAME+1) return -1;
 
   // Find the file in the root directory
@@ -337,15 +343,15 @@ int sfs_fopen(char *name) {
   // Create the file if it doesn't already exist
   if (inodeIdx == -1){
     // Need to create an inode
-    if (DEBUG) printf("No file found, creating one ");
+    if (DEBUG==1) printf("No file found, creating one ");
     inodeIdx = create_inode();
-    if (DEBUG) printf("at index %d \n", inodeIdx);
+    if (DEBUG==1) printf("at index %d \n", inodeIdx);
 
     // root dir slot is the node index minus one...
     root_directory[inodeIdx].filename = name;
     root_directory[inodeIdx].inode = inodeIdx;
 
-    if (DEBUG) printf("File created at inode %d  \n", inodeIdx);
+    if (DEBUG==1) printf("File created at inode %d  \n", inodeIdx);
   }
 
   // Check to see if the inode already exists in the table, if it does do not open twice
@@ -362,17 +368,26 @@ int sfs_fopen(char *name) {
   write_blocks(1+NUM_INODES, NUM_ROOTDIR_BLOCKS, root_directory);
 
 
-  if (DEBUG) printf("Returning FD %d \n", inodeIdx);
+  if (DEBUG==1) printf("Returning FD %d \n", inodeIdx);
 	return inodeIdx;
 }
 
 int sfs_fclose(int fileID){
+  // If there is no fd_table entry for the given ID then either closed
+  // Or the entry otherwise doesn't exist
+  if (fd_table[fileID].inode == 0){
+    if (DEBUG==1) printf("No such file descriptor entry at index %d \n", fileID);
+    return -1;
+  }
+
+  // If the entry does exist, reset both of the fields in the fd_table
+  // Return 0 for success
+  fd_table[fileID].inode = 0;
+  fd_table[fileID].rwptr = 0;
 
 	return 0;
 }
 
-// TODO TODO TODO keep in mind that fd table will be inode - 1
-// First inode slot taken up by the root dir, so this starts at 1
 int get_RW_block(int fileID, int write){
   // This function gets the block index from the rwpointer information (fileID)
   // If the write flag is on then we are in write mode, (write == 1)
@@ -393,7 +408,7 @@ int get_RW_block(int fileID, int write){
   
   // If the blockOffset < 12 then the rwOffset points to a direct pointer block
   if (blockOffset < 12){
-    if (DEBUG) printf("Acquiring data page from direct ptr #%d \n", blockOffset);
+    if (DEBUG==1) printf("Acquiring data page from direct ptr #%d \n", blockOffset);
 
     // If it is a direct pointer then the corresponding block can be read directly
     curDataPageIdx = inode->data_ptrs[blockOffset]; 
@@ -408,7 +423,7 @@ int get_RW_block(int fileID, int write){
       }
 
       // If trying to read from empty then we have a problem
-      if (DEBUG) printf("Attempting to read from uninst dir ptr #%d \n", blockOffset);
+      if (DEBUG==1) printf("Attempting to read from uninst dir ptr #%d \n", blockOffset);
       return -1;
     }
 
@@ -417,7 +432,7 @@ int get_RW_block(int fileID, int write){
   else{
     // Reading from indirect pointers
 
-    if (DEBUG) printf("Acquiring data page from indirect pointers \n");
+    if (DEBUG==1) printf("Acquiring data page from indirect pointers \n");
     // Indirect pointers
     // The indirect pointer will be the block index of the pointerPage
     // This block will be filled with contiguous pointers to data pages
@@ -430,7 +445,7 @@ int get_RW_block(int fileID, int write){
     // Probably has a block offset of 12
     if (indirPtr <=0){
       if (write == 1){
-        if (DEBUG) printf("No indirect found, creating new indirect for inode %d \n", fileID);
+        if (DEBUG==1) printf("No indirect found, creating new indirect for inode %d \n", fileID);
 
         // get the next free block and set the indirect pointer to be this location
         indirPtr = get_next_free_block();
@@ -444,7 +459,7 @@ int get_RW_block(int fileID, int write){
         return curDataPageIdx;
       }
       // if trying to read from empty then we have a problem
-      if (DEBUG) printf("Attempting to read from uninst indir ptr for inode #%d \n", fileID);
+      if (DEBUG==1) printf("Attempting to read from uninst indir ptr for inode #%d \n", fileID);
       return -1;
     }
     else{
@@ -461,12 +476,12 @@ int get_RW_block(int fileID, int write){
       // todo i think this is causing issues from writing currupted data from disk
       blockOffset -= 12;
       curDataPageIdx = pointerPage[blockOffset];
-      if (DEBUG) printf("Indirect pointer found at %d \n", blockOffset);
+      if (DEBUG==1) printf("Indirect pointer found at %d \n", blockOffset);
 
       // if i iterates all the way to block size, then the pointer page is full
       // cannot allocate any memory so quit
       if (blockOffset >= BLOCK_SIZE/PTR_SIZE){
-        if (DEBUG) printf("Inode is full on inode #%d \n", fileID);
+        if (DEBUG==1) printf("Inode is full on inode #%d \n", fileID);
         return -1;
       }
 
@@ -477,13 +492,13 @@ int get_RW_block(int fileID, int write){
           // Set the proper pointer on the idirect page
           // Write the indirect page back to disk
           curDataPageIdx = get_next_free_block();
-          if (DEBUG) printf("Create new pointer slot for page %d  \n", curDataPageIdx);
+          if (DEBUG==1) printf("Create new pointer slot for page %d  \n", curDataPageIdx);
           pointerPage[blockOffset] = curDataPageIdx;
           write_blocks(indirPtr, 1, pointerPage);
           return curDataPageIdx;
         }
         // If trying to read from empty then we have a problem
-        if (DEBUG) printf("Attempting to read from uninst indir ptr for inode #%d \n", fileID);
+        if (DEBUG==1) printf("Attempting to read from uninst indir ptr for inode #%d \n", fileID);
         return -1;
       }
 
@@ -499,27 +514,119 @@ int get_RW_block(int fileID, int write){
 }
 
 int sfs_fread(int fileID, char *buf, int length){
-
-	return 0;
-}
-
-int sfs_fwrite(int fileID, const char *buf, int length){
-  // fd and inode use same index, need both of them
+  // Want to read from the given fileID at the current offset
+  
+  // First, get the FD and inodes corresponding to the fileID
   file_descriptor* fd = &fd_table[fileID];
-  inode_t* inode = &inode_table[fileID];
+  inode_t* inode = &inode_table[fd->inode];
 
   // If the fd's inode is 0 then the fd entry is empty
   if (fd->inode == 0){
-    printf("FD table slot %d is empty \n", fd->inode);
+    if (DEBUG==1) printf("FD table is empty \n");
     return 0;
   }
+
   
-  int curDataPageIdx = get_RW_block(fileID, 1);
-  if (DEBUG) printf("Block to write file to is %d \n", curDataPageIdx);  
 
   // Get the current file location to write to based on the rwptr
   int rwOffset = fd->rwptr;
-  if (DEBUG) printf("RW offset %d \n", rwOffset);
+  if (DEBUG==1) printf("RW offset %d \n", rwOffset);
+  
+
+  // fileOffset is the byte location within the current block
+  // Also get the block to be read to from the current RW pointer location
+  int fileOffset = rwOffset % BLOCK_SIZE;
+  int curDataPageIdx = get_RW_block(fileID, 0);
+  
+
+  int bufferIdx = 0;
+  while(bufferIdx < length){
+    // Error checking, if curDataBlockIdx == -1 then out of bounds
+    if (curDataPageIdx == -1){
+      if (DEBUG==1) printf("Read out of bounds \n");
+      return 0;
+    }
+
+    char *dataBuf = calloc(1,BLOCK_SIZE);
+    read_blocks(curDataPageIdx, 1, (void*) dataBuf);
+
+
+    // Set the number of characters to copy within the block
+    int numCharsToCopy = (BLOCK_SIZE-fileOffset);  
+    if ((length-bufferIdx) < numCharsToCopy) numCharsToCopy = length-bufferIdx;
+
+    if (DEBUG==1) printf("Reading %d of %d bytes from block %d \n", numCharsToCopy, length, curDataPageIdx);
+
+    // copy the page into the buffer
+    memcpy(buf + bufferIdx, dataBuf + fileOffset, numCharsToCopy);
+
+    // write the blocks to memory
+    //write_blocks(curDataPageIdx, 1, (void*) dataBuf);
+    write_blocks(curDataPageIdx, 1, dataBuf);
+
+    // Free the source buffer
+    free(dataBuf);
+
+    // Update rwptr, the file size, and the current buffer idx
+    // If the rwptr has a larger offset than the inode size then size increases
+    // Assume optimal file writing
+    fd->rwptr += numCharsToCopy;
+    bufferIdx += numCharsToCopy;
+    fileOffset = 0;
+
+    // Double check and grab next chars
+    if (bufferIdx < length) curDataPageIdx = get_RW_block(fileID, 0);
+
+
+    /*
+    // Read the whole block from memory... cannot read a partial block
+    char *tempBlock = calloc(1,BLOCK_SIZE);
+    read_blocks(curDataBlockIdx, 1, (void*) tempBlock);
+
+    // Iterate over the block starting at the file offset
+    // Copy one byte at a time into the buffer
+    for (fileOffset = fileOffset; fileOffset < BLOCK_SIZE && bufferIdx < length; fileOffset ++){
+      buf[bufferIdx] = tempBlock[fileOffset];
+      
+      // Advance the rwptr and the buffer
+      bufferIdx ++;
+      fd->rwptr ++; 
+    }
+
+    // Set fileOffset to 0 if filled
+    fileOffset = 0;
+
+
+    // Get new data block
+    curDataBlockIdx = get_RW_block(fileID, 0);
+
+*/
+  }
+
+
+
+
+	return bufferIdx;
+}
+
+int sfs_fwrite(int fileID, const char *buf, int length){
+  // Grab both file descriptor entry and the inode
+  file_descriptor* fd = &fd_table[fileID];
+  inode_t* inode = &inode_table[fd->inode];
+
+  // If the fd's inode is 0 then the fd entry is empty
+  if (fd->inode == 0){
+    if (DEBUG==1) printf("FD table slot %d is empty \n", fd->inode);
+    return -1;
+  }
+  
+  // Get the block that we are going to write to
+  int curDataPageIdx = get_RW_block(fileID, 1);
+  if (DEBUG==1) printf("Block to write file to is %d \n", curDataPageIdx);  
+
+  // Get the current file location to write to based on the rwptr
+  int rwOffset = fd->rwptr;
+  if (DEBUG==1) printf("RW offset %d \n", rwOffset);
 
   // fileOffset is the byte location within the current block
   int fileOffset = rwOffset % BLOCK_SIZE;
@@ -527,31 +634,34 @@ int sfs_fwrite(int fileID, const char *buf, int length){
   int bufferIdx = 0;
 
   while (bufferIdx < length){
-    printf("\n\n");
+    if (curDataPageIdx == -1){
+      if (DEBUG==1) printf("Could not write \n");
+      break;
+    }
+
+    if (DEBUG==1) printf("\n\n");
     // read block from current page
-    char *dataBuf = malloc(BLOCK_SIZE);
-    // Unnecessary overhead
-    read_blocks(curDataPageIdx, 1, dataBuf);
-    //for (int i = 0; i < BLOCK_SIZE; i++){
-    //  printf("%c \n", dataBuf[i]);
-      //printf("d:%c b:%c \n", dataBuf[i], buf[i]);
-    //}
+    char *dataBuf = calloc(1,BLOCK_SIZE);
+    read_blocks(curDataPageIdx, 1, (void*) dataBuf);
+
 
     // Set the number of characters to copy within the block
     int numCharsToCopy = (BLOCK_SIZE-fileOffset);  
     if ((length-bufferIdx) < numCharsToCopy) numCharsToCopy = length-bufferIdx;
 
-    if (DEBUG) printf("Writing %d of %d bytes to block %d \n", numCharsToCopy, length, curDataPageIdx);
+    if (DEBUG==1) printf("Writing %d of %d bytes to block %d \n", numCharsToCopy, length, curDataPageIdx);
 
     // copy the page into the buffer
     memcpy(dataBuf + fileOffset, buf + bufferIdx, numCharsToCopy);
 
-    //for (int i = 0; i < length; i++){
-    //  printf("%c", &buf[i]);
+    // NOTE getting correct output here... not writing to disk properly though
+    //for (int i = 0; i < BLOCK_SIZE; i++){
+    //  printf("%c", &dataBuf[i]);
     //}
     //printf("\n\n");
 
     // write the blocks to memory
+    //write_blocks(curDataPageIdx, 1, (void*) dataBuf);
     write_blocks(curDataPageIdx, 1, dataBuf);
 
     // Free the source buffer
@@ -574,8 +684,28 @@ int sfs_fwrite(int fileID, const char *buf, int length){
 }
 
 int sfs_fseek(int fileID, int loc){
+  // Moves the r/w pointer to the given location (nothing to be done on disk)
+  //
+  // "interesting problem is performing a read or write after moving r/w ptr"
+  //    sfs_read and sfs_write both advance the same ptr
+  // Could implement with two ptrs?
 
-	//Implement sfs_fseek here	
+  // Grab the file descriptor entry
+  file_descriptor* fd = &fd_table[fileID];
+
+  // If the fd's inode is 0 then the fd entry is empty
+  if (fd->inode == 0){
+    if (DEBUG==1) printf("FD table slot %d is empty \n", fd->inode);
+    return -1;
+  }
+
+  if (loc < 0) {
+    if (DEBUG==1) printf("Invalid location %d \n", loc);
+    return -1;
+  }
+
+  fd_table[fileID].rwptr = loc;
+
 	return 0;
 }
 
