@@ -142,7 +142,7 @@ int get_next_free_block() {
 
 //////////////////// UNMARK NEXT FREE BLOCK ////////////////////
 // From tutorial code
-void rm_index(int index) {
+void free_block_at(int index) {
 
     // get index in array of which bit to free
     int i = index / 8;
@@ -259,6 +259,7 @@ int sfs_get_next_filename(char *fname) {
   // Get the next file name according to the indexing variable 
   file_map curFile = root_directory[nextFilenameIdx];
   if (DEBUG==1) printf("%d", curFile.inode);
+
   // If curFile has a null name or inode then clearly invalid
   if (curFile.filename == NULL || curFile.inode <= 0) {
     nextFilenameIdx = 0;
@@ -278,6 +279,53 @@ int sfs_get_next_filename(char *fname) {
   // return the inode of the file on success
 	return curFile.inode;
 }
+
+/*
+ * This would be an alternative sfs_get_next_filename... doesn't work currently
+ * The one above works... for whatever reason
+int sfs_get_next_filename(char *fname) {
+  // Copies the name of the next file in the directory into fname
+  // Returns a non-zero if there is a new file
+  // Once all of the files have been returned, this function returns 0
+  // Used to loop over the directory
+  // Ensure that the function remembers the current position in the dir at each call
+  // Facilitated by the single level directory structure
+
+  // Dummy value, kindof a wasty hacky workaround
+  file_map curFile = root_directory[nextFilenameIdx];
+
+  // If curFile has a null name or inode then clearly invalid
+  // But due to how the file system is set up in the system, 
+  // these are bound to happen (i.e. it's all full of holes)
+  // So just skip them, but break if the directory size has been reached
+  while (nextFilenameIdx < NUM_INODES) {
+    // Get the next file name according to the indexing variable 
+    file_map curFile = root_directory[nextFilenameIdx];
+    if (DEBUG==1) printf("%d", curFile.inode);
+    nextFilenameIdx ++;
+
+    // If the filename is valid then break the loop
+    if (curFile.filename != NULL && curFile.inode > 0) break;
+
+    if (nextFilenameIdx == NUM_INODES){
+      if (DEBUG==1) printf("Reached end of directory \n");
+      nextFilenameIdx = 0;
+      return 0;
+    }
+  }
+
+  // length is wrong in this case, not null terminated?
+  int copySize = strlen(curFile.filename);
+  if (strlen(curFile.filename) > MAXFILENAME) copySize = MAXFILENAME;
+
+  // Copy the filename into fname according to the size of the filename
+  memcpy(fname, curFile.filename, copySize);
+  
+  // return the inode of the file on success
+	return curFile.inode;
+}
+*/
+
 
 /*
 //////////////////// GET INODE FROM NAME /////////////////////
@@ -327,8 +375,10 @@ int get_inode_from_name(char* name){
   return -1;
 }
 
-// TODO is path different than name?
+// Is path different than name?
 int sfs_GetFileSize(const char* path) {
+  // Returns the size of a given file
+  
   // Get the inode corresponding to the name of the file
   int inode = get_inode_from_name(path);
   if (inode == -1) return -1;
@@ -336,11 +386,31 @@ int sfs_GetFileSize(const char* path) {
 }
 
 int sfs_fopen(char *name) {
+// Create a file (part of the open() call)
+//    Allocate and init an inode
+//        Need to somehow remember state of inode table to find which inode
+//        Can't use contiguous, will have holes
+//    Write mapping between i-node and file name in root dir
+//        Simply update memory and disk copies
+//    No disk data block allocated (size set to 0)
+//    Can also "open" the file for transactions (r/w)
+
   // See if the name exceeds the max
   // The name passed in will include the extension I believe
   //      i.e. some_name.txt
+  char * period;
+  period = strrchr(name, '.');
+  int extensionSize = strlen(name) - (period-name+1);
+
   if (DEBUG==1) printf("\nOpening %s \n", name);  
-  if (strlen(name) >= MAXFILENAME+1) return -1;
+  if (strlen(name) >= MAXFILENAME+1){
+    if (DEBUG==1) printf("Name is too long at %d characters \n", strlen(name));
+    return -1;
+  }
+  if (extensionSize > 3){
+    if (DEBUG==1) printf("Extension is too long at %d characters \n", extensionSize);
+    return -1;
+  }
 
   // Find the file in the root directory
   int inodeIdx = get_inode_from_name(name);
@@ -353,7 +423,7 @@ int sfs_fopen(char *name) {
     inodeIdx = create_inode();
     if (DEBUG==1) printf("at index %d \n", inodeIdx);
 
-    // root dir slot is the node index minus one...
+    // Root dir idx is the inode idx
     root_directory[inodeIdx].filename = name;
     root_directory[inodeIdx].inode = inodeIdx;
 
@@ -379,6 +449,10 @@ int sfs_fopen(char *name) {
 }
 
 int sfs_fclose(int fileID){
+  // Closes a file
+  // Removes the entry from the open file descriptor table
+
+
   // If there is no fd_table entry for the given ID then either closed
   // Or the entry otherwise doesn't exist
   if (fd_table[fileID].inode == 0){
@@ -458,9 +532,16 @@ int get_RW_block(int fileID, int write){
         inode->indirect_ptr = indirPtr;
 
         // set up a data page as well
+        // If a data page can be set up then write it to disk
         curDataPageIdx = get_next_free_block();
-        // set the first index in the pointer page to be the current data page index
-        pointerPage[0] = curDataPageIdx;
+        if (curDataPageIdx != -1){
+          // set the first index in the pointer page to be the current data page index
+          pointerPage[0] = curDataPageIdx;
+
+          // Write out the pointer page
+          write_blocks(indirPtr, 1, pointerPage);
+          if (DEBUG==1) printf("New indirect created at %d \n", curDataPageIdx);
+        }
 
         return curDataPageIdx;
       }
@@ -474,6 +555,7 @@ int get_RW_block(int fileID, int write){
       // get the index - 12 th page from the ptr page
       // If write and no index-12 then get a new block and link this page to that
       // else return the index-12
+      // TODO TODO TODO why does this work?
       int *pointerPage = calloc(1,BLOCK_SIZE);
       read_blocks(indirPtr, 1, (void*) pointerPage);
       
@@ -482,7 +564,7 @@ int get_RW_block(int fileID, int write){
       // todo i think this is causing issues from writing currupted data from disk
       blockOffset -= 12;
       curDataPageIdx = pointerPage[blockOffset];
-      if (DEBUG==1) printf("Indirect pointer found at %d \n", blockOffset);
+      if (DEBUG==1) printf("Indirect pointer found at index block %d, ptr slot %d \n", indirPtr, blockOffset);
 
       // if i iterates all the way to block size, then the pointer page is full
       // cannot allocate any memory so quit
@@ -498,9 +580,11 @@ int get_RW_block(int fileID, int write){
           // Set the proper pointer on the idirect page
           // Write the indirect page back to disk
           curDataPageIdx = get_next_free_block();
-          if (DEBUG==1) printf("Create new pointer slot for page %d  \n", curDataPageIdx);
-          pointerPage[blockOffset] = curDataPageIdx;
-          write_blocks(indirPtr, 1, pointerPage);
+          if (curDataPageIdx != -1){
+            if (DEBUG==1) printf("Create new pointer slot for page %d  \n", curDataPageIdx);
+            pointerPage[blockOffset] = curDataPageIdx;
+            write_blocks(indirPtr, 1, pointerPage);
+          }
           return curDataPageIdx;
         }
         // If trying to read from empty then we have a problem
@@ -614,11 +698,29 @@ int sfs_fread(int fileID, char *buf, int length){
 
 
 
-
+  
 	return bufferIdx;
 }
 
 int sfs_fwrite(int fileID, const char *buf, int length){
+  // Writes the given number of bytes of buffered data in buf to the open file
+  //    Start write at current file pointer
+  // Will increase the size of a file by the given number of bytes
+  // It may not increase the file size by the number of bytes
+  //    If the write pointer is located at a location other than EOF
+  //
+  // FLOW
+  //    Allocate disk blocks (mark them as alloced in free block list)
+  //    Modify the file's i-Node to point to these blocks
+  //    Write the data the user gives to these blocks
+  //    Flush all modifications to disk
+  // NOTE: All writes to disk are at block sizes. 
+  //    If you are writing a few blocks to a file, might end up writing a block to next
+  //    Important to read the last block and set the write pointer to the EOF
+  //    Bytes you want to write go to end of previous bytes already part of file
+  //    After writing bytes, flush block to disk
+
+
   // Grab both file descriptor entry and the inode
   file_descriptor* fd = &fd_table[fileID];
   inode_t* inode = &inode_table[fd->inode];
@@ -650,7 +752,7 @@ int sfs_fwrite(int fileID, const char *buf, int length){
 
     if (DEBUG==1) printf("\n\n");
     // read block from current page
-    char *dataBuf = calloc(1,BLOCK_SIZE);
+    char *dataBuf = calloc(BLOCK_SIZE,1);
     read_blocks(curDataPageIdx, 1, (void*) dataBuf);
 
 
@@ -719,7 +821,59 @@ int sfs_fseek(int fileID, int loc){
 }
 
 int sfs_remove(char *file) {
+  // Removes the file from the directory entry
+  // Releases the file allocation entries 
+  // Releases the data blocks used by the file 
+  //    So they can be used by new files in the future
 
-	//Implement sfs_remove here	
+
+  // Find the file in the root directory
+  // Hopefully file is the same as name
+  int inodeIdx = get_inode_from_name(file);
+  
+  // If the inode idx is <= 0 it is either the root dir or invalid
+  // Do not remove it in this case
+  if (inodeIdx <= 0) {
+    if (DEBUG) printf("File '%s' could not be found in the system", file);  
+    return -1;
+  }
+
+  // All of these are simplified due to simplified indexing used in the system (all same)
+  // Close the file if it is open
+  sfs_fclose(inodeIdx);
+  // Remove the directory entry
+  root_directory[inodeIdx].filename = NULL;
+  root_directory[inodeIdx].inode = 0;
+  // Get the inode
+  inode_t curInode = inode_table[inodeIdx];
+
+  // Mark all the locations in the inode as free (direct data ptrs)
+  for (int i = 0; i < 12; i++){
+    int curBlockIdx = curInode.data_ptrs[i];
+    free_block_at(curBlockIdx);
+    curInode.data_ptrs[i] = 0;
+  }
+  // Mark all the locations in the inode as free (indirect data ptr)
+  int indirIdx = curInode.indirect_ptr;
+  int *pointerPage = calloc(1,BLOCK_SIZE);
+  read_blocks(indirIdx, 1, (void*) pointerPage);
+  for (int i = 0; i < BLOCK_SIZE/PTR_SIZE; i ++){
+    if (pointerPage[i] != 0) free_block_at(pointerPage[i]);
+    pointerPage[i] = 0;
+  }
+  free_block_at(indirIdx);
+  curInode.indirect_ptr = 0;
+  free(pointerPage);
+
+  // Release rest of inode
+  curInode.size = 0;
+  curInode.mode = 0;
+   
+  // Write all back to disk
+  // The inode table and root directory were modified, so write these to disk
+  write_blocks(1, NUM_INODE_BLOCKS, inode_table);
+  write_blocks(1+NUM_INODES, NUM_ROOTDIR_BLOCKS, root_directory);
+
+
 	return 0;
 }
