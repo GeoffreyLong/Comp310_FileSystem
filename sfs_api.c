@@ -101,7 +101,7 @@ file_map root_directory[NUM_INODES];
 
 
 // Flag for debugging printing
-int DEBUG = -1;
+int DEBUG = 1;
 // Index for iterating over files in sfs_getnextfilename()
 int nextFilenameIdx = 0;
 
@@ -118,8 +118,9 @@ int get_next_free_block() {
     // ffs has the lsb as 1, not 0. So we need to subtract
     uint8_t bit = ffs(free_bit_map[i]) - 1;
 
-    // The map is full
-    if (i*8 + bit >= NUM_BLOCKS){
+    // The map is full (want to allocate fewer than number of blocks)
+    // Have to keep in mind the map size at the end though, don't want to overwrite
+    if (i*8 + bit >= NUM_BLOCKS - FREE_MAP_BLOCKS){
       if (DEBUG==1) printf("Unable to allocate a block \n");
       return -1;
     }
@@ -234,10 +235,15 @@ void mksfs(int fresh) {
     // open super block
     read_blocks(0, 1, &sb);
     if (DEBUG==1) printf("Block Size is: %lu\n", sb.block_size);
+    
     // open inode table
     read_blocks(1, NUM_INODE_BLOCKS, inode_table);
+    
+    // open directory
+    read_blocks(1+NUM_INODES, NUM_ROOTDIR_BLOCKS, root_directory);
 
     // open free block list
+    write_blocks(NUM_BLOCKS-FREE_MAP_BLOCKS, FREE_MAP_BLOCKS, free_bit_map);
   }
   return;
 }
@@ -554,6 +560,9 @@ int sfs_fread(int fileID, char *buf, int length){
     // Set the number of characters to copy within the block
     int numCharsToCopy = (BLOCK_SIZE-fileOffset);  
     if ((length-bufferIdx) < numCharsToCopy) numCharsToCopy = length-bufferIdx;
+    if ((inode->size - fd->rwptr) < numCharsToCopy) numCharsToCopy = inode->size - fd->rwptr;
+
+    if (numCharsToCopy == 0) break;
 
     if (DEBUG==1) printf("Reading %d of %d bytes from block %d \n", numCharsToCopy, length, curDataPageIdx);
 
