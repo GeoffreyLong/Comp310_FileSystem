@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define MAXFILENAME 60
+#define MAXFILENAME 20
 
 typedef struct {
     int magic;

@@ -826,6 +826,7 @@ int sfs_remove(char *file) {
   // Releases the data blocks used by the file 
   //    So they can be used by new files in the future
 
+  if (DEBUG==1) printf("Removing file %s \n", file);
 
   // Find the file in the root directory
   // Hopefully file is the same as name
@@ -842,12 +843,14 @@ int sfs_remove(char *file) {
   // Close the file if it is open
   sfs_fclose(inodeIdx);
   // Remove the directory entry
+  if (DEBUG==1) printf("Removing file %s directory entry \n", file);
   root_directory[inodeIdx].filename = NULL;
   root_directory[inodeIdx].inode = 0;
   // Get the inode
   inode_t curInode = inode_table[inodeIdx];
 
   // Mark all the locations in the inode as free (direct data ptrs)
+  if (DEBUG==1) printf("Removing file %s direct pointers \n", file);
   for (int i = 0; i < 12; i++){
     int curBlockIdx = curInode.data_ptrs[i];
     free_block_at(curBlockIdx);
@@ -855,17 +858,21 @@ int sfs_remove(char *file) {
   }
   // Mark all the locations in the inode as free (indirect data ptr)
   int indirIdx = curInode.indirect_ptr;
-  int *pointerPage = calloc(1,BLOCK_SIZE);
-  read_blocks(indirIdx, 1, (void*) pointerPage);
-  for (int i = 0; i < BLOCK_SIZE/PTR_SIZE; i ++){
-    if (pointerPage[i] != 0) free_block_at(pointerPage[i]);
-    pointerPage[i] = 0;
+  if (indirIdx > 0){
+    if (DEBUG==1) printf("Removing file %s indirect pointers \n", file);
+    int *pointerPage = calloc(1,BLOCK_SIZE);
+    read_blocks(indirIdx, 1, (void*) pointerPage);
+    for (int i = 0; i < BLOCK_SIZE/PTR_SIZE; i ++){
+      if (pointerPage[i] != 0) free_block_at(pointerPage[i]);
+      pointerPage[i] = 0;
+    }
+    free_block_at(indirIdx);
+    curInode.indirect_ptr = 0;
+    free(pointerPage);
   }
-  free_block_at(indirIdx);
-  curInode.indirect_ptr = 0;
-  free(pointerPage);
 
   // Release rest of inode
+  if (DEBUG==1) printf("Removing file %s inode \n", file);
   curInode.size = 0;
   curInode.mode = 0;
    
